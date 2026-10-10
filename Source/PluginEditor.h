@@ -13,6 +13,7 @@ namespace onirique
 class PitchBoxEditor final : public AudioProcessorEditor,
                              public AudioProcessorEditorARAExtension,
                              private AnalysisQueue::Listener,
+                             private ChangeListener,
                              private Timer
 {
 public:
@@ -25,11 +26,21 @@ public:
 private:
     void analysisFinished (PitchBoxAudioSource*) override;
     void analysisProgressed (PitchBoxAudioSource*, float) override;
+    void changeListenerCallback (ChangeBroadcaster*) override;
     void timerCallback() override;
 
     /** Finds the take the user is looking at. */
     void refreshTarget();
     void pushEdits();
+
+    /** The same two jobs in a host without ARA, where the take is one the
+        plugin recorded itself. */
+    void refreshTransfer();
+    void updateTransferStatus();
+
+    void syncControls();
+    void showStatus (const String& headerText, const String& gridText, float gridProgress);
+    pb::Analysis::Ptr currentAnalysis() const;
 
     PitchBoxProcessor& processor;
 
@@ -40,6 +51,12 @@ private:
     Label amountLabel, transitionLabel, formantLabel;
     TextButton detectKeyButton { "DETECT KEY" };
     TextButton enabledButton { "CORRECTION" };
+    TextButton transferButton { "TRANSFER" };
+
+    bool transferMode = false;
+    pb::Analysis::Ptr shownAnalysis;
+    String gridStatus;
+    float gridProgress = 0.0f;
 
     PitchBoxAudioSource* currentSource = nullptr;
     PitchBoxAudioModification* currentModification = nullptr;

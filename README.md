@@ -99,9 +99,24 @@ ARA doit être supporté par le DAW *et* activé sur la piste. Le plugin s'insè
 comme extension ARA, pas comme insert classique. Hôtes compatibles ARA 2 :
 Studio One, Logic Pro, Cubase / Nuendo, REAPER, Cakewalk, Mixcraft.
 
-Inséré dans un hôte sans ARA, le plugin laisse passer le signal tel quel et
-l'interface l'indique — il ne peut pas corriger un flux dont il n'a jamais vu
-l'ensemble.
+### Hôtes sans ARA (FL Studio, Ableton Live…) : mode Transfer
+
+Sans ARA, personne ne donne la prise au plugin : il faut la lui montrer une
+fois. Inséré comme effet sur la piste de la voix :
+
+1. cliquer **TRANSFER** (le bouton passe à *CANCEL*, le plugin est armé) ;
+2. lancer la lecture dans l'hôte sur le passage à corriger ;
+3. arrêter la lecture (ou cliquer **STOP**) : le passage est analysé.
+
+Le plugin rejoue ensuite sa propre copie corrigée à la place de la piste chaque
+fois que la tête de lecture traverse ce passage ; en dehors, la piste passe
+telle quelle. Un nouveau transfert remplace le précédent. La prise est
+enregistrée dans le projet (FLAC 24 bits), avec les éditions.
+
+Limites : une seule prise par instance ; elle est calée sur sa position dans le
+morceau, donc si le clip est déplacé ensuite il faut refaire le transfert ; et
+elle n'est rejouée qu'à la fréquence d'échantillonnage où elle a été
+enregistrée. Le code est dans `Source/transfer/`, testé par `test_transfer`.
 
 ---
 

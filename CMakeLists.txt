@@ -96,6 +96,7 @@ target_sources(OniriquePitchBox PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/ara/PitchBoxARA.cpp
+    Source/transfer/TransferSession.cpp
     Source/ui/NoteGrid.cpp
     Source/ui/Theme.cpp)
 
@@ -129,3 +130,25 @@ foreach(test_name yin psola notes realtime renderer)
     target_include_directories(test_${test_name} PRIVATE tests)
     add_test(NAME ${test_name} COMMAND test_${test_name})
 endforeach()
+
+# The transfer session is the one piece of the audio path that cannot be tested
+# without JUCE: it lives on a timer and a fifo. It gets a console host of its own.
+juce_add_console_app(test_transfer PRODUCT_NAME "test_transfer")
+
+target_sources(test_transfer PRIVATE
+    tests/test_transfer.cpp
+    Source/transfer/TransferSession.cpp)
+
+target_include_directories(test_transfer PRIVATE tests)
+
+target_compile_definitions(test_transfer PRIVATE
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+
+target_link_libraries(test_transfer PRIVATE
+    pitchbox_core
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_recommended_config_flags)
+
+add_test(NAME transfer COMMAND test_transfer)

@@ -102,10 +102,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
 
     detectKeyButton.onClick = [this]
     {
-        if (currentSource == nullptr)
-            return;
-
-        if (auto a = currentSource->getAnalysis())
+        if (auto a = currentAnalysis())
         {
             edits.settings.scale = a->key.scale;
             rootBox.setSelectedId (a->key.scale.root + 1, dontSendNotification);
@@ -116,6 +113,14 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     };
     addAndMakeVisible (detectKeyButton);
 
+    transferButton.onClick = [this]
+    {
+        processor.getTransfer().toggleTransfer();
+        updateTransferStatus();
+    };
+    addChildComponent (transferButton);
+
+    processor.getTransfer().addChangeListener (this);
     analysisQueue->addListener (this);
 
     setResizable (true, true);
@@ -129,6 +134,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
 PitchBoxEditor::~PitchBoxEditor()
 {
     analysisQueue->removeListener (this);
+    processor.getTransfer().removeChangeListener (this);
     setLookAndFeel (nullptr);
 }
 
@@ -142,9 +148,24 @@ void PitchBoxEditor::refreshTarget()
 
     if (view == nullptr)
     {
-        status = "This plugin needs an ARA host. Load it as an ARA extension on a track.";
-        grid.setStatus (status, 0.0f);
+        // No ARA, so nobody is going to hand us a take: the user transfers one.
+        if (! transferMode)
+        {
+            transferMode = true;
+            transferButton.setVisible (true);
+            resized();
+        }
+
+        refreshTransfer();
         return;
+    }
+
+    if (transferMode)
+    {
+        transferMode = false;
+        transferButton.setVisible (false);
+        shownAnalysis = nullptr;
+        resized();
     }
 
     auto* documentController = view->getDocumentController();
@@ -216,8 +237,129 @@ void PitchBoxEditor::refreshTarget()
 
 void PitchBoxEditor::pushEdits()
 {
-    if (currentModification != nullptr)
+    if (transferMode)
+        processor.getTransfer().setEdits (edits);
+    else if (currentModification != nullptr)
         currentModification->setEdits (edits);
+}
+
+pb::Analysis::Ptr PitchBoxEditor::currentAnalysis() const
+{
+    if (transferMode)
+        return processor.getTransfer().getAnalysis();
+
+    return currentSource != nullptr ? currentSource->getAnalysis() : nullptr;
+}
+
+//==============================================================================
+void PitchBoxEditor::refreshTransfer()
+{
+    auto& session = processor.getTransfer();
+
+    edits = session.getEdits();
+
+    // Only when the take itself changed: setting the analysis also resets the
+    // zoom, which must not happen every time a transfer is armed.
+    if (auto latest = session.getAnalysis(); latest != shownAnalysis)
+    {
+        shownAnalysis = latest;
+        grid.setAnalysis (latest);
+    }
+
+    grid.setEditState (&edits);
+    syncControls();
+    updateTransferStatus();
+}
+
+void PitchBoxEditor::syncControls()
+{
+    const auto& s = edits.settings;
+
+    rootBox.setSelectedId (s.scale.root + 1, dontSendNotification);
+    scaleBox.setSelectedId ((int) s.scale.type + 1, dontSendNotification);
+    amountSlider.setValue (s.globalAmount, dontSendNotification);
+    transitionSlider.setValue (s.transitionSeconds, dontSendNotification);
+    formantSlider.setValue (s.formantRatio, dontSendNotification);
+    enabledButton.setToggleState (s.enabled, dontSendNotification);
+}
+
+void PitchBoxEditor::showStatus (const String& headerText, const String& gridText, float newGridProgress)
+{
+    if (headerText != status)
+    {
+        status = headerText;
+        repaint (getLocalBounds().removeFromTop (58));
+    }
+
+    if (gridText != gridStatus || ! approximatelyEqual (newGridProgress, gridProgress))
+    {
+        gridStatus = gridText;
+        gridProgress = newGridProgress;
+        grid.setStatus (gridText, newGridProgress);
+    }
+}
+
+void PitchBoxEditor::updateTransferStatus()
+{
+    auto& session = processor.getTransfer();
+    const auto state = session.getState();
+
+    using State = TransferSession::State;
+
+    transferButton.setToggleState (state != State::idle, dontSendNotification);
+    transferButton.setButtonText (state == State::idle ? "TRANSFER"
+                                                       : state == State::armed ? "CANCEL" : "STOP");
+
+    if (state == State::armed)
+    {
+        const String text ("Armed. Press play in the host over the passage to transfer.");
+        showStatus (text, text, 0.0f);
+        return;
+    }
+
+    if (state == State::recording || state == State::finishing)
+    {
+        const auto text = "RECORDING  " + String (session.getRecordedSeconds(), 1) + " s";
+        showStatus (text, text, 0.0f);
+        return;
+    }
+
+    if (session.isAnalysing())
+    {
+        const auto p = session.getAnalysisProgress();
+        const auto text = "ANALYSING  " + String (roundToInt (p * 100.0f)) + "%";
+        showStatus (text, text, p);
+        return;
+    }
+
+    if (auto analysis = session.getAnalysis())
+    {
+        const auto takeRate = session.getTakeSampleRate();
+
+        // A take is only played back at the rate it was recorded at; say so
+        // rather than leave the user wondering why nothing is corrected.
+        if (! approximatelyEqual (takeRate, session.getHostSampleRate()))
+        {
+            showStatus ("Take recorded at " + String (roundToInt (takeRate))
+                            + " Hz. Transfer it again at the current rate.",
+                        {}, 1.0f);
+            return;
+        }
+
+        showStatus (String (analysis->notes.size()) + String (CharPointer_UTF8 (" notes  \xc2\xb7  key "))
+                        + String (analysis->key.scale.describe()),
+                    {}, 1.0f);
+        return;
+    }
+
+    const String text ("Click TRANSFER, then play the passage in the host.");
+    showStatus (text, text, 0.0f);
+}
+
+void PitchBoxEditor::changeListenerCallback (ChangeBroadcaster*)
+{
+    if (transferMode)
+        refreshTransfer();
 }
 
 //==============================================================================
@@ -253,6 +395,20 @@ void PitchBoxEditor::analysisProgressed (PitchBoxAudioSource* source, float frac
 
 void PitchBoxEditor::timerCallback()
 {
+    if (transferMode && getARAEditorView() == nullptr)
+    {
+        updateTransferStatus();
+
+        // The analysis thread adopts its result into the edit state itself.
+        if (processor.getTransfer().getEditVersion() != edits.version)
+        {
+            edits = processor.getTransfer().getEdits();
+            grid.setEditState (&edits);
+        }
+
+        return;
+    }
+
     if (currentSource == nullptr)
     {
         refreshTarget();
@@ -300,7 +456,7 @@ void PitchBoxEditor::paint (Graphics& g)
 
     g.setColour (haze);
     g.setFont (monoFont (11.0f));
-    g.drawText (status, header.withTrimmedRight (170).withTrimmedLeft (330),
+    g.drawText (status, header.withTrimmedRight (transferMode ? 300 : 170).withTrimmedLeft (330),
                 Justification::centredRight, false);
 
     // Side panel ground.
@@ -317,6 +473,9 @@ void PitchBoxEditor::resized()
     auto header = bounds.removeFromTop (58);
 
     enabledButton.setBounds (header.removeFromRight (150).reduced (14, 16));
+
+    if (transferMode)
+        transferButton.setBounds (header.removeFromRight (130).withTrimmedRight (-8).reduced (0, 16));
 
     auto side = bounds.removeFromLeft (178).reduced (14, 16);
 

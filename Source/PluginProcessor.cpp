@@ -24,6 +24,7 @@ bool PitchBoxProcessor::isBusesLayoutSupported (const BusesLayout& layouts) cons
 void PitchBoxProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     prepareToPlayForARA (sampleRate, samplesPerBlock, getMainBusNumOutputChannels(), getProcessingPrecision());
+    transfer.prepare (sampleRate, samplesPerBlock, getMainBusNumOutputChannels());
 }
 
 void PitchBoxProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
@@ -34,12 +35,21 @@ void PitchBoxProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         buffer.clear (i, 0, buffer.getNumSamples());
 
     // In an ARA host the renderer produces the whole output from the take, so
-    // whatever arrived in the buffer is irrelevant. Outside ARA there is no
-    // take at all: pass the signal through rather than silently dropping it.
-    if (! processBlockForARA (buffer, isNonRealtime() ? Realtime::no : Realtime::yes, getPlayHead()))
+    // whatever arrived in the buffer is irrelevant.
+    if (isBoundToARA())
     {
-        // Nothing to do: the input is already the output.
+        processBlockForARA (buffer, isNonRealtime() ? Realtime::no : Realtime::yes, getPlayHead());
+        return;
     }
+
+    // Outside ARA the buffer is the only audio there is: the transfer session
+    // records from it, and replaces it only where it has a take to play.
+    Optional<AudioPlayHead::PositionInfo> position;
+
+    if (auto* head = getPlayHead())
+        position = head->getPosition();
+
+    transfer.process (buffer, position);
 }
 
 AudioProcessorEditor* PitchBoxProcessor::createEditor()
@@ -47,15 +57,18 @@ AudioProcessorEditor* PitchBoxProcessor::createEditor()
     return new PitchBoxEditor (*this);
 }
 
-void PitchBoxProcessor::getStateInformation (MemoryBlock&)
+void PitchBoxProcessor::getStateInformation (MemoryBlock& destination)
 {
-    // Edits live in the ARA audio modifications, which the host persists
+    // Under ARA, edits live in the audio modifications, which the host persists
     // through the document controller, so there is nothing instance-specific
-    // worth storing here.
+    // worth storing here. A transferred take has no such home.
+    if (! isBoundToARA())
+        transfer.saveState (destination);
 }
 
-void PitchBoxProcessor::setStateInformation (const void*, int)
+void PitchBoxProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
+    transfer.restoreState (data, sizeInBytes);
 }
 
 } // namespace onirique

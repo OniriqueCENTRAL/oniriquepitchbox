@@ -4,6 +4,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "ara/PitchBoxARA.h"
+#include "transfer/TransferSession.h"
 
 namespace onirique
 {
@@ -13,9 +14,10 @@ namespace onirique
     There is very little here, and that is the point: in an ARA plugin the real
     work belongs to the document controller (which owns the takes and their
     analyses) and to the playback renderer (which turns them back into audio).
-    This class mostly routes a block to the renderer and, when the host is not
-    an ARA host, passes the signal through untouched rather than pretending to
-    correct a stream it has never seen the whole of.
+    This class mostly routes a block to the renderer. When the host is not an
+    ARA host there is no take to be handed, so the block goes to the transfer
+    session instead, which records the passage itself and then plays it back
+    corrected.
 */
 class PitchBoxProcessor final : public AudioProcessor,
                                 public AudioProcessorARAExtension
@@ -53,7 +55,12 @@ public:
         edit, and the editor says so instead of showing an empty canvas. */
     bool hasARAAccess() const noexcept { return isBoundToARA(); }
 
+    /** Where the take lives in a host without ARA. */
+    TransferSession& getTransfer() noexcept { return transfer; }
+
 private:
+    TransferSession transfer;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PitchBoxProcessor)
 };
 
