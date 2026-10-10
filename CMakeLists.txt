@@ -86,7 +86,7 @@ juce_add_plugin(OniriquePitchBox
     FORMATS ${PITCHBOX_FORMATS}
     PRODUCT_NAME "PitchBox"
     # What hosts list it as. The file on disk keeps the short name.
-    PLUGIN_NAME "Onirique PitchBox"
+    PLUGIN_NAME "ONIRIQUE PitchBox"
     IS_ARA_EFFECT TRUE
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
