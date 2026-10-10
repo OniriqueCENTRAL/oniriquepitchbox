@@ -27,49 +27,95 @@ void OniriqueLookAndFeel::drawRotarySlider (Graphics& g, int x, int y, int width
                                             float sliderPos, float startAngle, float endAngle,
                                             Slider& slider)
 {
-    const auto bounds = Rectangle<int> (x, y, width, height).toFloat().reduced (4.0f);
+    // Room is kept under the dial for the two numbers at the ends of its arc.
+    const auto bounds = Rectangle<int> (x, y, width, height).toFloat().reduced (5.0f).withTrimmedBottom (9.0f);
     const auto radius = jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
     const auto centre = bounds.getCentre();
     const auto angle = startAngle + sliderPos * (endAngle - startAngle);
-    const auto thickness = jmax (2.0f, radius * 0.17f);
+    const auto thickness = jmax (3.0f, radius * 0.13f);
     const auto arcRadius = radius - thickness * 0.5f;
 
-    // Body: a dark sphere lit from the upper left, as on the rest of the range.
-    g.setGradientFill (ColourGradient (Colour (0xff4a2a2e),
-                                       centre.x - radius * 0.3f, centre.y - radius * 0.4f,
-                                       Colour (0xff0b0506),
-                                       centre.x + radius * 0.6f, centre.y + radius * 0.7f,
-                                       true));
-    g.fillEllipse (bounds.reduced (thickness));
+    auto pointAt = [centre] (float a, float r)
+    {
+        return Point<float> (centre.x + r * std::sin (a), centre.y - r * std::cos (a));
+    };
 
     Path track;
     track.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, startAngle, endAngle, true);
-    g.setColour (line);
+    g.setColour (Colour (0x26ffd2d6));
     g.strokePath (track, PathStrokeType (thickness, PathStrokeType::curved, PathStrokeType::rounded));
 
     // Bipolar controls fill outwards from the middle, so "no change" reads as
     // an empty arc rather than as a half-full one.
     const auto bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
     const auto originAngle = bipolar ? (startAngle + endAngle) * 0.5f : startAngle;
+    const auto from = jmin (originAngle, angle);
+    const auto to = jmax (originAngle, angle);
 
-    Path arc;
-    arc.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f,
-                       jmin (originAngle, angle), jmax (originAngle, angle), true);
+    if (to - from > 0.01f)
+    {
+        Path arc;
+        arc.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, from, to, true);
 
-    g.setColour (slider.isMouseOverOrDragging() ? emberLit : ember);
-    g.strokePath (arc, PathStrokeType (thickness, PathStrokeType::curved, PathStrokeType::rounded));
+        // The arc glows: two wide, faint strokes under the bright one.
+        g.setColour (ember.withAlpha (0.16f));
+        g.strokePath (arc, PathStrokeType (thickness * 3.4f, PathStrokeType::curved, PathStrokeType::rounded));
+        g.setColour (ember.withAlpha (0.28f));
+        g.strokePath (arc, PathStrokeType (thickness * 2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+
+        // Pale where it starts, ember where the pointer is.
+        const auto hot = slider.isMouseOverOrDragging() ? emberLit : ember;
+        g.setGradientFill (ColourGradient (Colour (0xffffc2c8), pointAt (from, arcRadius),
+                                           hot, pointAt (to, arcRadius), false));
+        g.strokePath (arc, PathStrokeType (thickness, PathStrokeType::curved, PathStrokeType::rounded));
+    }
+
+    // Body: a dark sphere lit from the upper left, set in a thin rim.
+    const auto body = Rectangle<float> (2.0f * (radius - thickness * 1.9f), 2.0f * (radius - thickness * 1.9f))
+                          .withCentre (centre);
+
+    g.setColour (Colour (0xff050203));
+    g.fillEllipse (body.expanded (2.5f));
+
+    g.setGradientFill (ColourGradient (Colour (0xff4a2a2e),
+                                       centre.x - radius * 0.3f, centre.y - radius * 0.4f,
+                                       Colour (0xff0b0506),
+                                       centre.x + radius * 0.6f, centre.y + radius * 0.7f,
+                                       true));
+    g.fillEllipse (body);
+
+    g.setColour (Colour (0x30ffd2d6));
+    g.drawEllipse (body, 1.0f);
+
+    const auto bodyRadius = body.getWidth() * 0.5f;
 
     Path pointer;
-    const auto pointerLength = radius * 0.52f;
-    pointer.startNewSubPath (centre.x, centre.y - radius * 0.14f);
-    pointer.lineTo (centre.x, centre.y - pointerLength);
-    pointer.applyTransform (AffineTransform::rotation (angle, centre.x, centre.y));
+    pointer.startNewSubPath (pointAt (angle, bodyRadius * 0.28f));
+    pointer.lineTo (pointAt (angle, bodyRadius * 0.82f));
 
-    g.setColour (bone);
-    g.strokePath (pointer, PathStrokeType (jmax (1.5f, radius * 0.1f), PathStrokeType::curved,
+    g.setColour (Colours::white);
+    g.strokePath (pointer, PathStrokeType (jmax (1.8f, radius * 0.08f), PathStrokeType::curved,
                                            PathStrokeType::rounded));
-}
 
+    // The range, written small at the two ends of the arc.
+    const auto& properties = slider.getProperties();
+
+    if (properties.contains ("low") && properties.contains ("high"))
+    {
+        g.setColour (haze);
+        g.setFont (monoFont (9.0f));
+
+        auto write = [&] (const String& text, float a)
+        {
+            const auto p = pointAt (a, radius);
+            g.drawText (text, Rectangle<float> (40.0f, 10.0f).withCentre ({ p.x, p.y + 9.0f }),
+                        Justification::centred, false);
+        };
+
+        write (properties["low"].toString(), startAngle);
+        write (properties["high"].toString(), endAngle);
+    }
+}
 void OniriqueLookAndFeel::drawButtonBackground (Graphics& g, Button& button, const Colour&,
                                                 bool highlighted, bool down)
 {
@@ -77,17 +123,25 @@ void OniriqueLookAndFeel::drawButtonBackground (Graphics& g, Button& button, con
     const auto radius = bounds.getHeight() * 0.5f;
     const auto on = button.getToggleState();
 
-    g.setColour (on ? ember.withAlpha (0.22f) : Colour (0x4d000000));
-    g.fillRoundedRectangle (bounds, radius);
-
+    // An engaged control is a lit capsule: dark red inside, a bright ember
+    // edge, and a halo around it.
     if (on)
     {
-        g.setColour (ember.withAlpha (0.5f));
-        g.drawRoundedRectangle (bounds.expanded (1.5f), radius + 1.5f, 2.0f);
+        g.setColour (ember.withAlpha (0.18f));
+        g.drawRoundedRectangle (bounds.expanded (2.0f), radius + 2.0f, 3.0f);
+
+        g.setGradientFill (ColourGradient (Colour (0xff6e0f1a), 0.0f, bounds.getY(),
+                                           Colour (0xff3a060c), 0.0f, bounds.getBottom(), false));
+    }
+    else
+    {
+        g.setColour (down ? Colour (0x80000000) : Colour (0x59000000));
     }
 
-    g.setColour (on ? ember : (highlighted || down ? ember.withAlpha (0.6f) : line));
-    g.drawRoundedRectangle (bounds, radius, 1.0f);
+    g.fillRoundedRectangle (bounds, radius);
+
+    g.setColour (on ? emberLit : (highlighted || down ? ember.withAlpha (0.7f) : Colour (0x33ffd2d6)));
+    g.drawRoundedRectangle (bounds, radius, on ? 1.6f : 1.0f);
 
     // The little LED that marks an engaged control on every Onirique plugin.
     const auto led = Rectangle<float> (7.0f, 7.0f)
@@ -106,8 +160,8 @@ void OniriqueLookAndFeel::drawButtonBackground (Graphics& g, Button& button, con
 void OniriqueLookAndFeel::drawButtonText (Graphics& g, TextButton& button, bool, bool)
 {
     const auto on = button.getToggleState();
-    g.setColour (on ? mist : haze);
-    g.setFont (monoFont (11.0f));
+    g.setColour (on ? Colours::white : haze);
+    g.setFont (capsFont (10.0f));
 
     auto area = button.getLocalBounds();
     area.removeFromLeft (roundToInt (area.getHeight() * 0.8f));
@@ -119,7 +173,7 @@ void OniriqueLookAndFeel::drawComboBox (Graphics& g, int width, int height, bool
                                         int, int, int, int, ComboBox& box)
 {
     const auto bounds = Rectangle<float> (0.0f, 0.0f, (float) width, (float) height).reduced (0.5f);
-    const auto radius = 6.0f;
+    const auto radius = bounds.getHeight() * 0.5f;
 
     g.setColour (Colour (0x59000000));
     g.fillRoundedRectangle (bounds, radius);
@@ -139,13 +193,40 @@ void OniriqueLookAndFeel::drawComboBox (Graphics& g, int width, int height, bool
 
 void OniriqueLookAndFeel::positionComboBoxText (ComboBox& box, Label& label)
 {
-    label.setBounds (10, 0, box.getWidth() - 28, box.getHeight());
-    label.setFont (monoFont (12.0f));
+    label.setBounds (14, 0, box.getWidth() - 34, box.getHeight());
+    label.setFont (capsFont (10.5f));
 }
 
-Font OniriqueLookAndFeel::getLabelFont (Label&)
+Font OniriqueLookAndFeel::getLabelFont (Label& label)
 {
-    return monoFont (11.0f);
+    return label.getProperties().contains ("pill") ? monoFont (11.0f).boldened() : capsFont (10.0f);
+}
+
+void OniriqueLookAndFeel::drawLabel (Graphics& g, Label& label)
+{
+    if (! label.getProperties().contains ("pill"))
+    {
+        LookAndFeel_V4::drawLabel (g, label);
+        return;
+    }
+
+    const auto bounds = label.getLocalBounds().toFloat().reduced (0.5f);
+    const auto radius = bounds.getHeight() * 0.5f;
+
+    g.setColour (Colour (0x73000000));
+    g.fillRoundedRectangle (bounds, radius);
+    g.setColour (Colour (0x33ffd2d6));
+    g.drawRoundedRectangle (bounds, radius, 1.0f);
+
+    const auto led = Rectangle<float> (5.0f, 5.0f).withCentre ({ bounds.getX() + radius + 1.0f, bounds.getCentreY() });
+    g.setColour (ember.withAlpha (0.35f));
+    g.fillEllipse (led.expanded (2.0f));
+    g.setColour (ember);
+    g.fillEllipse (led);
+
+    g.setColour (mist);
+    g.setFont (getLabelFont (label));
+    g.drawText (label.getText(), bounds, Justification::centred, false);
 }
 
 } // namespace onirique::theme

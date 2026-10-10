@@ -156,3 +156,17 @@ target_link_libraries(test_transfer PRIVATE
     juce::juce_recommended_config_flags)
 
 add_test(NAME transfer COMMAND test_transfer)
+
+# A development tool, not part of the product: renders the editor to a PNG
+# without a host. Built only when asked for by name.
+add_executable(pitchbox_snapshot EXCLUDE_FROM_ALL
+    tools/snapshot.cpp
+    "${PITCHBOX_JUCE_DIR}/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp")
+
+target_include_directories(pitchbox_snapshot PRIVATE
+    $<TARGET_PROPERTY:OniriquePitchBox,INCLUDE_DIRECTORIES>)
+
+target_compile_definitions(pitchbox_snapshot PRIVATE
+    $<TARGET_PROPERTY:OniriquePitchBox,COMPILE_DEFINITIONS>)
+
+target_link_libraries(pitchbox_snapshot PRIVATE OniriquePitchBox pitchbox_core PitchBoxAssets)

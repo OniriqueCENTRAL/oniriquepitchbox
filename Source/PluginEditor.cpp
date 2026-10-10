@@ -86,32 +86,42 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     };
     addAndMakeVisible (scaleBox);
 
-    auto setUpKnob = [this] (Slider& s, Label& l, const String& name,
-                             double min, double max, double value, const String& suffix)
+    auto setUpKnob = [this] (Slider& s, Label& l, Label& readout, const String& name,
+                             double min, double max, double value,
+                             const String& low, const String& high)
     {
         s.setSliderStyle (Slider::RotaryVerticalDrag);
         s.setTextBoxStyle (Slider::NoTextBox, false, 0, 0);
         s.setRange (min, max, 0.001);
         s.setValue (value, dontSendNotification);
-        s.setTextValueSuffix (suffix);
+
+        // Double click puts a knob back where it started.
+        s.setDoubleClickReturnValue (true, value);
+
+        s.getProperties().set ("low", low);
+        s.getProperties().set ("high", high);
         s.onDragStart = [this] { beginEdit(); };
         addAndMakeVisible (s);
 
         l.setText (name, dontSendNotification);
         l.setJustificationType (Justification::centred);
-        l.setColour (Label::textColourId, haze);
+        l.setColour (Label::textColourId, mist);
         addAndMakeVisible (l);
+
+        readout.getProperties().set ("pill", true);
+        readout.setInterceptsMouseClicks (false, false);
+        addAndMakeVisible (readout);
     };
 
-    setUpKnob (amountSlider, amountLabel, "AMOUNT", 0.0, 1.0, 0.0, "");
-    setUpKnob (transitionSlider, transitionLabel, "SPEED", 0.0, 0.25, 0.035, " s");
-    setUpKnob (formantSlider, formantLabel, "FORMANT", 0.7, 1.4, 1.0, "");
-    setUpKnob (modulationSlider, modulationLabel, "MODULATION", 0.0, 2.0, 1.0, "");
-
+    setUpKnob (amountSlider, amountLabel, amountValue, "AMOUNT", 0.0, 1.0, 0.0, "0", "100");
+    setUpKnob (transitionSlider, transitionLabel, transitionValue, "SPEED", 0.0, 0.25, 0.035, "0", "250");
+    setUpKnob (formantSlider, formantLabel, formantValue, "FORMANT", 0.7, 1.4, 1.0, "0.7", "1.4");
+    setUpKnob (modulationSlider, modulationLabel, modulationValue, "MODULATION", 0.0, 2.0, 1.0, "0", "200");
+    updateValueReadouts();
     // How much of the sung movement inside a note is kept: vibrato, scoops and
     // drift alike. At 0 the pitch line of the selected notes is drawn flat,
     // at 1 it is as sung, and above that it is exaggerated.
-    modulationSlider.setDoubleClickReturnValue (true, 1.0);
+
     modulationSlider.onValueChange = [this]
     {
         const auto selection = grid.getSelection();
@@ -206,8 +216,8 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     analysisQueue->addListener (this);
 
     setResizable (true, true);
-    setResizeLimits (980, 600, 2400, 1500);
-    setSize (1160, 720);
+    setResizeLimits (980, 680, 2400, 1500);
+    setSize (1160, 760);
 
     refreshTarget();
     startTimerHz (30);
@@ -419,7 +429,7 @@ void PitchBoxEditor::selectionChanged()
     const auto selection = grid.getSelection();
     const auto usable = ! selection.empty();
 
-    for (auto* c : std::initializer_list<Component*> { &modulationSlider, &modulationLabel })
+    for (auto* c : std::initializer_list<Component*> { &modulationSlider, &modulationLabel, &modulationValue })
     {
         c->setEnabled (usable);
         c->setAlpha (usable ? 1.0f : 0.4f);
@@ -605,6 +615,16 @@ void PitchBoxEditor::analysisProgressed (PitchBoxAudioSource* source, float frac
         progress = fraction;
 }
 
+void PitchBoxEditor::updateValueReadouts()
+{
+    auto percent = [] (double v) { return String (roundToInt (v * 100.0)) + " %"; };
+
+    amountValue.setText (percent (amountSlider.getValue()), dontSendNotification);
+    transitionValue.setText (String (roundToInt (transitionSlider.getValue() * 1000.0)) + " ms", dontSendNotification);
+    formantValue.setText (String (formantSlider.getValue(), 2), dontSendNotification);
+    modulationValue.setText (percent (modulationSlider.getValue()), dontSendNotification);
+}
+
 void PitchBoxEditor::updatePlayhead()
 {
     int64 song = 0;
@@ -647,6 +667,7 @@ void PitchBoxEditor::updatePlayhead()
 void PitchBoxEditor::timerCallback()
 {
     updatePlayhead();
+    updateValueReadouts();
 
     if (transferMode && getARAEditorView() == nullptr)
     {
@@ -657,6 +678,7 @@ void PitchBoxEditor::timerCallback()
         {
             edits = processor.getTransfer().getEdits();
             grid.setEditState (&edits);
+            syncControls();
         }
 
         return;
@@ -758,22 +780,22 @@ void PitchBoxEditor::resized()
     side.removeFromTop (14);
 
     // Four knobs share whatever height is left, so the panel still fits at the
-    // smallest window size.
-    const auto knobHeight = jlimit (86, 112, side.getHeight() / 4 - 4);
+    // smallest window size. Each is a name, the dial, and its readout.
+    const auto knobHeight = jlimit (104, 132, side.getHeight() / 4 - 6);
 
-    auto knob = [&side, knobHeight] (Slider& s, Label& l)
+    auto knob = [&side, knobHeight] (Slider& s, Label& l, Label& readout)
     {
         auto area = side.removeFromTop (knobHeight);
-        s.setBounds (area.removeFromTop (knobHeight - 22).reduced (14, 0));
-        l.setBounds (area);
-        side.removeFromTop (4);
+        l.setBounds (area.removeFromTop (16));
+        readout.setBounds (area.removeFromBottom (22).withSizeKeepingCentre (96, 22));
+        s.setBounds (area.reduced (14, 0));
+        side.removeFromTop (6);
     };
 
-    knob (amountSlider, amountLabel);
-    knob (transitionSlider, transitionLabel);
-    knob (formantSlider, formantLabel);
-    knob (modulationSlider, modulationLabel);
-
+    knob (amountSlider, amountLabel, amountValue);
+    knob (transitionSlider, transitionLabel, transitionValue);
+    knob (formantSlider, formantLabel, formantValue);
+    knob (modulationSlider, modulationLabel, modulationValue);
     grid.setBounds (bounds);
 }
 

@@ -50,6 +50,7 @@ private:
     void updateHistoryButtons();
 
     void updatePlayhead();
+    void updateValueReadouts();
     void selectionChanged();
     void auditionNote (int index, int64_t position);
 
@@ -64,6 +65,7 @@ private:
     ComboBox rootBox, scaleBox;
     Slider amountSlider, transitionSlider, formantSlider, modulationSlider;
     Label amountLabel, transitionLabel, formantLabel, modulationLabel;
+    Label amountValue, transitionValue, formantValue, modulationValue;
     TextButton undoButton { "UNDO" }, redoButton { "REDO" }, resetButton { "RESET" };
     std::vector<pb::EditState> undoStack, redoStack;
     TextButton detectKeyButton { "DETECT KEY" };

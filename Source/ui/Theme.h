@@ -23,8 +23,23 @@ inline const Colour line    { 0x21ffd2d6 };
 
 inline juce::Font displayFont (float height, bool heavy = true)
 {
-    return juce::Font (juce::FontOptions (juce::Font::getDefaultSansSerifFontName(), height,
-                                          heavy ? juce::Font::bold : juce::Font::plain));
+    // Named outright: the "default sans-serif" placeholder does not survive
+    // being put in FontOptions, and what comes out the other end is a serif.
+   #if JUCE_WINDOWS
+    const juce::String family ("Segoe UI");
+   #elif JUCE_MAC
+    const juce::String family ("Helvetica Neue");
+   #else
+    const juce::String family ("DejaVu Sans");
+   #endif
+
+    return juce::Font (juce::FontOptions (family, height, heavy ? juce::Font::bold : juce::Font::plain));
+}
+
+/** The wide, heavy capitals used for every control name across the range. */
+inline juce::Font capsFont (float height)
+{
+    return displayFont (height).withExtraKerningFactor (0.14f);
 }
 
 inline juce::Font monoFont (float height)
@@ -54,6 +69,10 @@ public:
     void positionComboBoxText (juce::ComboBox&, juce::Label&) override;
 
     juce::Font getLabelFont (juce::Label&) override;
+
+    /** A label carrying the "pill" property is drawn as the value readout that
+        sits under every knob of the range: a dark capsule with its LED. */
+    void drawLabel (juce::Graphics&, juce::Label&) override;
 };
 
 } // namespace onirique::theme

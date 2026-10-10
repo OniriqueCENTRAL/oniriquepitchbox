@@ -201,8 +201,15 @@ void NoteGrid::paint (Graphics& g)
         return;
     }
 
-    drawPitchCurve (g);
-    drawNotes (g);
+    // Everything that belongs to the take is clipped to the right of the note
+    // names: scrolled or zoomed, a note slides under that column, not over it.
+    {
+        const Graphics::ScopedSaveState clip (g);
+        g.reduceClipRegion (getLocalBounds().withTrimmedLeft (roundToInt (kRulerWidth) + 1));
+
+        drawPitchCurve (g);
+        drawNotes (g);
+    }
 
     if (playheadVisible && playhead >= viewStart && playhead <= viewStart + viewLength)
     {
