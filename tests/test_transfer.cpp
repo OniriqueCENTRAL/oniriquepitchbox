@@ -5,6 +5,7 @@
 
 #include "../Source/transfer/TransferSession.h"
 
+#include <chrono>
 #include <cstdio>
 
 using namespace pb;
@@ -260,6 +261,28 @@ int main()
 
         std::snprintf (d, sizeof d, "differs from the take by %.2g", maxDifference (corrected[0], left));
         check (maxDifference (corrected[0], left) > 0.01, "correction is audible", d);
+
+        // Some hosts hand out very small blocks, FL Studio among them. The
+        // cost of correcting must not go up as the blocks get smaller.
+        for (const int size : { 512, 64, 16, 4 })
+        {
+            juce::AudioBuffer<float> block (2, size);
+            const auto started = std::chrono::steady_clock::now();
+
+            for (int64_t pos = 0; pos + size <= n; pos += size)
+            {
+                block.clear();
+                session.process (block, positionAt (kSongStart + pos, true));
+            }
+
+            const auto seconds = std::chrono::duration<double> (std::chrono::steady_clock::now() - started).count();
+            const auto speed = ((double) n / kSr) / seconds;
+
+            char name[64];
+            std::snprintf (name, sizeof name, "blocks of %d stay cheap", size);
+            std::snprintf (d, sizeof d, "%.0fx real time, stereo", speed);
+            check (speed > 20.0, name, d);
+        }
 
         // Holding a note: with the transport stopped, that stretch of the take
         // is heard on top of whatever the track is doing, and only that.

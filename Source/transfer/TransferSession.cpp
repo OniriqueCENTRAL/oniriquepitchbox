@@ -27,6 +27,9 @@ namespace
 
     constexpr int kChunk = 1 << 16;
 
+    /** How much of the take is corrected at a time during playback. */
+    constexpr int kRenderSlice = 1024;
+
     /** Compresses a take for the plugin state. FLAC is fixed point, so a take
         that goes over full scale is scaled down to fit and the factor stored
         alongside, rather than clipped. */
@@ -198,7 +201,9 @@ void TransferSession::prepare (double newSampleRate, int maxBlockSamples, int ch
     sampleRate = newSampleRate;
     numChannels = channels;
 
-    renderer.prepare (maxBlock, sampleRate);
+    renderer.prepare (kRenderSlice, sampleRate);
+    renderSlice.setSize (jmax (2, numChannels), kRenderSlice);
+    sliceLength = 0;
     heldVoice.gain = 0.0f;
     fadingVoice.gain = 0.0f;
 
@@ -277,6 +282,10 @@ void TransferSession::refreshAudioState() noexcept
 
     audioEdits = edits;
     audioRevision = latest;
+
+    // Whatever changed, what was rendered ahead may no longer be what should
+    // be heard.
+    sliceLength = 0;
 }
 
 void TransferSession::process (AudioBuffer<float>& buffer,
@@ -339,49 +348,53 @@ void TransferSession::process (AudioBuffer<float>& buffer,
         return;
 
     const auto takeRange = Range<int64>::withStartAndLength (audioTake->startInSong, audioTake->numSamples);
-    const auto takeChannels = (int) audioTake->channels.size();
+    const auto blockRange = Range<int64>::withStartAndLength (*time, numSamples);
+    const auto range = blockRange.getIntersectionWith (takeRange);
 
-    // The renderer was prepared for maxBlock; a host that sends more than it
-    // announced gets the block in slices rather than an uncorrected one.
-    for (int done = 0; done < numSamples;)
+    if (range.isEmpty())
+        return;
+
+    const auto sliceChannels = jmin ((int) audioTake->channels.size(), renderSlice.getNumChannels());
+    const auto last = range.getEnd() - audioTake->startInSong;
+
+    for (auto at = range.getStart() - audioTake->startInSong; at < last;)
     {
-        const auto count = jmin (maxBlock, numSamples - done);
-        const auto blockRange = Range<int64>::withStartAndLength (*time + done, count);
-        const auto range = blockRange.getIntersectionWith (takeRange);
+        if (at < sliceStart || at >= sliceStart + sliceLength)
+            fillRenderSlice (at);
 
-        if (! range.isEmpty())
-        {
-            const auto first = range.getStart() - audioTake->startInSong;
-            const auto last = range.getEnd() - audioTake->startInSong;
-            const auto startInBuffer = done + (int) (range.getStart() - blockRange.getStart());
+        const auto count = (int) (std::min (last, sliceStart + sliceLength) - at);
+        const auto inSlice = (int) (at - sliceStart);
+        const auto inBuffer = (int) (at + audioTake->startInSong - blockRange.getStart());
 
-            for (int c = 0; c < buffer.getNumChannels(); ++c)
-            {
-                if (c >= takeChannels)
-                {
-                    // A mono take in a wider layout: same signal everywhere.
-                    buffer.copyFrom (c, startInBuffer, buffer, takeChannels - 1, startInBuffer,
-                                     (int) range.getLength());
-                    continue;
-                }
+        // A mono take in a wider layout plays the same signal everywhere.
+        for (int c = 0; c < buffer.getNumChannels(); ++c)
+            buffer.copyFrom (c, inBuffer, renderSlice, jmin (c, sliceChannels - 1), inSlice, count);
 
-                const auto& source = audioTake->channels[(size_t) c];
-
-                renderer.render (source.data(),
-                                 -audioTake->padding,
-                                 (int64) source.size(),
-                                 audioEdits,
-                                 first,
-                                 last,
-                                 buffer.getWritePointer (c) + startInBuffer,
-                                 first);
-            }
-        }
-
-        done += count;
+        at += count;
     }
 }
 
+void TransferSession::fillRenderSlice (int64 from) noexcept
+{
+    sliceStart = from;
+    sliceLength = std::min ((int64) kRenderSlice, audioTake->numSamples - from);
+
+    const auto channels = jmin ((int) audioTake->channels.size(), renderSlice.getNumChannels());
+
+    for (int c = 0; c < channels; ++c)
+    {
+        const auto& source = audioTake->channels[(size_t) c];
+
+        renderer.render (source.data(),
+                         -audioTake->padding,
+                         (int64) source.size(),
+                         audioEdits,
+                         from,
+                         from + sliceLength,
+                         renderSlice.getWritePointer (c),
+                         from);
+    }
+}
 void TransferSession::mixAudition (AuditionVoice& voice, AudioBuffer<float>& buffer, bool wanted) noexcept
 {
     if (voice.clip == nullptr || voice.clip->length <= 0 || (! wanted && voice.gain <= 0.0f))

@@ -191,6 +191,19 @@ private:
     pb::EditState audioEdits;
     uint64_t audioRevision = 0;
 
+    /** The corrected take, rendered a slice ahead of where it is being played.
+
+        The renderer's cost is per call, not per sample: it walks back to the
+        last phase anchor every time, however little it is then asked for. A
+        host that hands out blocks of a few samples would pay that walk
+        hundreds of times over for the same stretch of audio. So the take is
+        rendered in slices of a fixed size, and the host's blocks, whatever
+        their size, are copied out of the current slice. */
+    void fillRenderSlice (int64 from) noexcept;
+
+    AudioBuffer<float> renderSlice;
+    int64 sliceStart = 0, sliceLength = 0;
+
     /** One clip being played. Two of them, so that a new clip can fade in
         while the one it replaces fades out. */
     struct AuditionVoice
