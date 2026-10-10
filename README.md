@@ -154,17 +154,23 @@ exprimées en écart relatif à la hauteur détectée.
 l'endroit où cette marche commence détermine la phase partout ensuite. Un
 renderer naïf repart du début du fichier : coût proportionnel à la longueur de
 la prise, inacceptable sur le thread audio. Les ancres sont des points de remise
-à zéro déterministes, posés sur des marques de période aux débuts de notes et
-dans les zones non voisées. La marche repart de l'ancre précédente, donc son
-coût est borné ; et comme la position d'une ancre ne dépend que de l'analyse,
-jamais du découpage en buffers de l'hôte, le même échantillon sort identique
-qu'on le demande en un bloc, en quarante, ou pendant un export hors ligne.
+à zéro déterministes, posés sur des marques de période. Comme la position d'une
+ancre ne dépend que de l'analysis, jamais du découpage en buffers de l'hôte, le
+même échantillon sort identique qu'on le demande en un bloc, en quarante, ou
+pendant un export hors ligne.
 
-**Le cache de courbe de correction.** Le curseur consulte la courbe de ratio sur
-toute la marche, pas seulement sur le bloc. La reconstruire à chaque bloc
-coûtait 7x le travail utile sur des buffers de 64 échantillons ; elle est donc
-construite par tranches larges et réutilisée tant que ni l'analyse ni la version
-des éditions n'ont bougé.
+Une remise à zéro n'est pas gratuite : dès que la hauteur est modifiée, elle
+raccourcit le cycle en cours. Les ancres ne sont donc posées que là où ça ne
+s'entend pas — quand la voix s'arrête, dans un souffle ou une consonne — et
+sinon au plus une toutes les deux secondes dans un passage voisé plus long que
+ça. Surtout pas aux débuts de notes ni à intervalle court : sur une vraie voix
+cela faisait ~45 cycles tronqués par seconde, un flutter sur tout le signal.
+
+**La marche reprise.** Des ancres espacées rendraient chaque bloc coûteux s'il
+fallait repartir de la dernière à chaque fois. Le renderer retient donc où en
+était le curseur et reprend de là au bloc suivant ; et il demande le ratio de
+correction grain par grain au lieu de remplir une courbe échantillon par
+échantillon sur toute la marche.
 
 ### Contrat temps réel
 
