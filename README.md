@@ -228,6 +228,9 @@ complet hors ligne. Les deux qui comptent le plus :
 - **FORMANT** : déplace l'enveloppe spectrale indépendamment de la hauteur.
 - **DETECT KEY** : règle la gamme sur la tonalité trouvée dans la prise.
 
+Le trait vertical est la tête de lecture de l'hôte ; pendant la lecture la vue
+tourne la page pour le suivre.
+
 La courbe grise est ce qui a été chanté, la courbe braise ce qui sortira. Le
 contour fantôme derrière une note montre d'où elle vient.
 

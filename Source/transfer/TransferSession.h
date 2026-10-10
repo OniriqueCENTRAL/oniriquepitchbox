@@ -102,6 +102,9 @@ public:
     /** Sample rate of the current take, or 0 when there is none. A take is only
         played back at the rate it was recorded at. */
     double getTakeSampleRate() const;
+
+    /** Song position of the first sample of the take; false when there is none. */
+    bool getTakeStartInSong (int64& start) const;
     double getHostSampleRate() const noexcept       { return sampleRate; }
 
     pb::Analysis::Ptr getAnalysis() const;

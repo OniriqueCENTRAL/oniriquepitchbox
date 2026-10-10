@@ -44,6 +44,42 @@ void NoteGrid::setStatus (String newStatus, float newProgress)
     repaint();
 }
 
+void NoteGrid::setPlayhead (int64_t sample, bool visible, bool playing)
+{
+    visible = visible && analysis != nullptr && sample >= 0 && sample <= analysis->numSamples;
+
+    if (visible == playheadVisible && (! visible || sample == playhead))
+        return;
+
+    const auto strip = [this] (int64_t at)
+    {
+        return Rectangle<int> (roundToInt (timeToX (at)) - 8, 0, 16, getHeight());
+    };
+
+    if (playheadVisible)
+        repaint (strip (playhead));
+
+    playhead = sample;
+    playheadVisible = visible;
+
+    if (! visible)
+        return;
+
+    // Turn the page when the line runs off it, unless the user has hold of
+    // something: the grid must not move under a drag.
+    const auto outside = sample < viewStart || sample >= viewStart + viewLength;
+
+    if (playing && outside && draggingNote < 0 && ! lassoing)
+    {
+        viewStart = jlimit ((int64_t) 0, jmax ((int64_t) 0, analysis->numSamples - viewLength),
+                            sample - viewLength / 20);
+        repaint();
+        return;
+    }
+
+    repaint (strip (playhead));
+}
+
 void NoteGrid::zoomToFit()
 {
     if (analysis == nullptr || analysis->notes.empty())
@@ -122,6 +158,19 @@ void NoteGrid::paint (Graphics& g)
 
     drawPitchCurve (g);
     drawNotes (g);
+
+    if (playheadVisible && playhead >= viewStart && playhead <= viewStart + viewLength)
+    {
+        const auto x = timeToX (playhead);
+
+        g.setColour (mist.withAlpha (0.9f));
+        g.fillRect (x - 0.75f, 0.0f, 1.5f, (float) getHeight());
+
+        Path marker;
+        marker.addTriangle (x - 5.0f, 0.0f, x + 5.0f, 0.0f, x, 7.0f);
+        g.setColour (emberLit);
+        g.fillPath (marker);
+    }
 
     if (lassoing)
     {

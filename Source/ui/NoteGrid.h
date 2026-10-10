@@ -59,6 +59,10 @@ public:
     void mouseMove (const MouseEvent&) override;
 
     void setStatus (String newStatus, float newProgress);
+
+    /** Where the host's transport is, in take samples. While it is running the
+        view pages along so the line never leaves it. */
+    void setPlayhead (int64_t sample, bool visible, bool playing);
     void zoomToFit();
 
 private:
@@ -96,6 +100,9 @@ private:
 
     String status;
     float progress = 0.0f;
+
+    int64_t playhead = 0;
+    bool playheadVisible = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NoteGrid)
 };

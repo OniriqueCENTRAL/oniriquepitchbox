@@ -34,6 +34,19 @@ void PitchBoxProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
     for (int i = getTotalNumInputChannels(); i < getTotalNumOutputChannels(); ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
+    Optional<AudioPlayHead::PositionInfo> position;
+
+    if (auto* head = getPlayHead())
+        position = head->getPosition();
+
+    if (position.hasValue())
+    {
+        if (const auto time = position->getTimeInSamples())
+            transportPosition.store (*time);
+
+        transportPlaying.store (position->getIsPlaying());
+    }
+
     // In an ARA host the renderer produces the whole output from the take, so
     // whatever arrived in the buffer is irrelevant.
     if (isBoundToARA())
@@ -44,11 +57,6 @@ void PitchBoxProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
 
     // Outside ARA the buffer is the only audio there is: the transfer session
     // records from it, and replaces it only where it has a take to play.
-    Optional<AudioPlayHead::PositionInfo> position;
-
-    if (auto* head = getPlayHead())
-        position = head->getPosition();
-
     transfer.process (buffer, position);
 }
 

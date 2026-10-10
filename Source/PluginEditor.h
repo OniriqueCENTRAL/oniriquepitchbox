@@ -49,6 +49,7 @@ private:
     void clearHistory();
     void updateHistoryButtons();
 
+    void updatePlayhead();
     void selectionChanged();
     void auditionNote (int index, int64_t position);
 

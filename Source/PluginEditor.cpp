@@ -210,7 +210,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     setSize (1160, 720);
 
     refreshTarget();
-    startTimerHz (12);
+    startTimerHz (30);
 }
 
 PitchBoxEditor::~PitchBoxEditor()
@@ -605,8 +605,49 @@ void PitchBoxEditor::analysisProgressed (PitchBoxAudioSource* source, float frac
         progress = fraction;
 }
 
+void PitchBoxEditor::updatePlayhead()
+{
+    int64 song = 0;
+    const auto playing = processor.getTransport (song);
+
+    int64 inTake = 0;
+    bool visible = false;
+
+    if (transferMode)
+    {
+        int64 start = 0;
+
+        if (processor.getTransfer().getTakeStartInSong (start))
+        {
+            inTake = song - start;
+            visible = true;
+        }
+    }
+    else if (currentModification != nullptr)
+    {
+        // Song time to take time, through whichever region of this take the
+        // transport is in.
+        for (auto* region : currentModification->getPlaybackRegions())
+        {
+            const auto range = region->getSampleRange (processor.getSampleRate(),
+                                                       ARAPlaybackRegion::IncludeHeadAndTail::no);
+
+            if (range.contains (song))
+            {
+                inTake = song - range.getStart() + region->getStartInAudioModificationSamples();
+                visible = true;
+                break;
+            }
+        }
+    }
+
+    grid.setPlayhead (inTake, visible, playing);
+}
+
 void PitchBoxEditor::timerCallback()
 {
+    updatePlayhead();
+
     if (transferMode && getARAEditorView() == nullptr)
     {
         updateTransferStatus();

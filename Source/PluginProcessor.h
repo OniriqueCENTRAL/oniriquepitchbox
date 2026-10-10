@@ -55,11 +55,21 @@ public:
         edit, and the editor says so instead of showing an empty canvas. */
     bool hasARAAccess() const noexcept { return isBoundToARA(); }
 
+    /** Where the host's transport was at the last block, for the editor's
+        playhead. Returns whether it was running. */
+    bool getTransport (int64& positionInSamples) const noexcept
+    {
+        positionInSamples = transportPosition.load();
+        return transportPlaying.load();
+    }
+
     /** Where the take lives in a host without ARA. */
     TransferSession& getTransfer() noexcept { return transfer; }
 
 private:
     TransferSession transfer;
+    std::atomic<int64> transportPosition { 0 };
+    std::atomic<bool> transportPlaying { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PitchBoxProcessor)
 };
