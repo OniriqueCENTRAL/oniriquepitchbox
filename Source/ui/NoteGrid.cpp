@@ -17,12 +17,25 @@ namespace
 
     /** Fraction of the view one notch of the wheel moves it by. */
     constexpr float kScrollPerNotch = 0.35f;
+
+    constexpr int kScrollBarSize = 12;
 }
 
 NoteGrid::NoteGrid()
 {
     setWantsKeyboardFocus (false);
     setMouseCursor (MouseCursor::NormalCursor);
+
+    for (auto* bar : { &timeBar, &pitchBar })
+    {
+        bar->setAutoHide (false);
+        bar->setColour (ScrollBar::thumbColourId, haze.withAlpha (0.55f));
+        bar->setColour (ScrollBar::trackColourId, Colour (0x30000000));
+        bar->addListener (this);
+        addAndMakeVisible (bar);
+    }
+
+    updateScrollBars();
 }
 
 void NoteGrid::setAnalysis (pb::Analysis::Ptr newAnalysis)
@@ -34,6 +47,7 @@ void NoteGrid::setAnalysis (pb::Analysis::Ptr newAnalysis)
     selectionChanged();
 
     zoomToFit();
+    updateScrollBars();
     repaint();
 }
 
@@ -41,6 +55,36 @@ void NoteGrid::setStatus (String newStatus, float newProgress)
 {
     status = std::move (newStatus);
     progress = newProgress;
+    repaint();
+}
+
+void NoteGrid::updateScrollBars()
+{
+    const auto total = (double) jmax ((int64_t) 1, analysis != nullptr ? analysis->numSamples : viewLength);
+
+    timeBar.setRangeLimits (0.0, total, dontSendNotification);
+    timeBar.setCurrentRange ((double) viewStart, (double) jmin ((int64_t) total, viewLength), dontSendNotification);
+
+    // The bar runs downwards and pitch runs upwards, so it holds the distance
+    // from the top of the keyboard rather than the pitch itself.
+    pitchBar.setRangeLimits (0.0, (double) (kHighestCents - kLowestCents), dontSendNotification);
+    pitchBar.setCurrentRange ((double) (kHighestCents - viewHighCents),
+                              (double) (viewHighCents - viewLowCents), dontSendNotification);
+}
+
+void NoteGrid::scrollBarMoved (ScrollBar* bar, double newRangeStart)
+{
+    if (bar == &timeBar)
+    {
+        viewStart = (int64_t) newRangeStart;
+    }
+    else
+    {
+        const auto span = viewHighCents - viewLowCents;
+        viewHighCents = kHighestCents - (float) newRangeStart;
+        viewLowCents = viewHighCents - span;
+    }
+
     repaint();
 }
 
@@ -73,6 +117,7 @@ void NoteGrid::setPlayhead (int64_t sample, bool visible, bool playing)
     {
         viewStart = jlimit ((int64_t) 0, jmax ((int64_t) 0, analysis->numSamples - viewLength),
                             sample - viewLength / 20);
+        updateScrollBars();
         repaint();
         return;
     }
@@ -463,6 +508,17 @@ void NoteGrid::mouseDown (const MouseEvent& e)
 {
     draggingNote = -1;
     lassoing = false;
+    panning = false;
+
+    if (e.mods.isMiddleButtonDown() || e.mods.isRightButtonDown())
+    {
+        panning = true;
+        panStart = e.position;
+        panStartTime = viewStart;
+        panStartLowCents = viewLowCents;
+        setMouseCursor (MouseCursor::DraggingHandCursor);
+        return;
+    }
 
     if (edits == nullptr)
         return;
@@ -524,6 +580,26 @@ void NoteGrid::mouseDown (const MouseEvent& e)
 
 void NoteGrid::mouseDrag (const MouseEvent& e)
 {
+    if (panning)
+    {
+        // The grid follows the hand: what was under the pointer stays there.
+        const auto width = jmax (1.0f, (float) getWidth() - kRulerWidth);
+        const auto span = viewHighCents - viewLowCents;
+        const auto total = analysis != nullptr ? analysis->numSamples : viewLength;
+
+        viewStart = jlimit ((int64_t) 0, jmax ((int64_t) 0, total - viewLength),
+                            panStartTime - (int64_t) ((double) ((e.position.x - panStart.x) / width)
+                                                      * (double) viewLength));
+
+        viewLowCents = jlimit (kLowestCents, jmax (kLowestCents, kHighestCents - span),
+                               panStartLowCents + (e.position.y - panStart.y) / jmax (1.0f, (float) getHeight()) * span);
+        viewHighCents = viewLowCents + span;
+
+        updateScrollBars();
+        repaint();
+        return;
+    }
+
     if (edits == nullptr)
         return;
 
@@ -604,8 +680,12 @@ void NoteGrid::mouseUp (const MouseEvent&)
     if (draggingNote >= 0 && onAudition)
         onAudition (-1, 0);
 
+    if (panning)
+        setMouseCursor (MouseCursor::NormalCursor);
+
     draggingNote = -1;
     lassoing = false;
+    panning = false;
     repaint();
 }
 
@@ -705,10 +785,16 @@ void NoteGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& whe
         scrollTime (wheel.deltaX);
     }
 
+    updateScrollBars();
     repaint();
 }
 void NoteGrid::resized()
 {
+    auto area = getLocalBounds();
+
+    pitchBar.setBounds (area.removeFromRight (kScrollBarSize).withTrimmedBottom (kScrollBarSize));
+    timeBar.setBounds (area.removeFromBottom (kScrollBarSize).withTrimmedLeft (roundToInt (kRulerWidth)));
+
     repaint();
 }
 

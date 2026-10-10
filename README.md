@@ -222,6 +222,8 @@ complet hors ligne. Les deux qui comptent le plus :
 - **Molette** : monter et descendre sur tout le clavier. `Maj` + molette :
   avancer et reculer dans la prise. `Ctrl` + molette : zoom horizontal.
   `Alt` + molette : zoom vertical.
+- **Barres de défilement** en bas et à droite, et **glisser au clic droit ou
+  molette** pour déplacer la vue dans les deux sens.
 - **AMOUNT** : force de la correction sur les notes non touchées à la main.
 - **SPEED** : durée de la transition en début et fin de note. 0 donne le snap
   dur et audible ; 40–80 ms sonne comme un chanteur qui trouve sa note.

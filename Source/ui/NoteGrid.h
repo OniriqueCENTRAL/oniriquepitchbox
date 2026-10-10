@@ -19,7 +19,8 @@ using namespace juce;
     sits against where it is being pulled, and a row of rectangles alone hides
     exactly that.
 */
-class NoteGrid final : public Component
+class NoteGrid final : public Component,
+                       private ScrollBar::Listener
 {
 public:
     NoteGrid();
@@ -66,6 +67,12 @@ public:
     void zoomToFit();
 
 private:
+    void scrollBarMoved (ScrollBar*, double newRangeStart) override;
+
+    /** Brings the two scroll bars back in line with the view. Called after
+        anything that moves or zooms it. */
+    void updateScrollBars();
+
     int noteAt (Point<float>) const;
     Rectangle<float> blobFor (size_t index) const;
     bool isSelected (size_t index) const;
@@ -103,6 +110,14 @@ private:
 
     int64_t playhead = 0;
     bool playheadVisible = false;
+
+    ScrollBar timeBar { false }, pitchBar { true };
+
+    // Dragging with the middle or right button slides the view about.
+    bool panning = false;
+    Point<float> panStart;
+    int64_t panStartTime = 0;
+    float panStartLowCents = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NoteGrid)
 };
