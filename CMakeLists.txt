@@ -55,6 +55,8 @@ target_include_directories(pitchbox_core PUBLIC Source)
 set_target_properties(pitchbox_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MSVC)
+    # MSVC's <cmath> only declares M_PI when asked. PUBLIC so the tests get it too.
+    target_compile_definitions(pitchbox_core PUBLIC _USE_MATH_DEFINES)
     target_compile_options(pitchbox_core PRIVATE /W4)
 else()
     target_compile_options(pitchbox_core PRIVATE -Wall -Wextra)
@@ -66,6 +68,14 @@ set(PITCHBOX_FORMATS VST3)
 
 if(APPLE)
     list(APPEND PITCHBOX_FORMATS AU)
+endif()
+
+# The system VST3 folder on Windows is under Program Files, which a normal build
+# cannot write to, so installing after the build is opt-in there.
+if(WIN32)
+    option(PITCHBOX_COPY_AFTER_BUILD "Install the plugin after building" OFF)
+else()
+    option(PITCHBOX_COPY_AFTER_BUILD "Install the plugin after building" ON)
 endif()
 
 juce_add_plugin(OniriquePitchBox
@@ -80,7 +90,7 @@ juce_add_plugin(OniriquePitchBox
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    COPY_PLUGIN_AFTER_BUILD TRUE)
+    COPY_PLUGIN_AFTER_BUILD ${PITCHBOX_COPY_AFTER_BUILD})
 
 target_sources(OniriquePitchBox PRIVATE
     Source/PluginProcessor.cpp
