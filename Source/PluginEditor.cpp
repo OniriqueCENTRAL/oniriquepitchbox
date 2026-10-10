@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
 
+#include <BinaryData.h>
+
 namespace onirique
 {
 
@@ -12,6 +14,38 @@ namespace
         static OniriqueLookAndFeel laf;
         return laf;
     }
+
+    constexpr int kLogoWidth = 44;
+    constexpr int kLogoMargin = 8;   // room for the glow around it
+
+    Image makeLogo()
+    {
+        const auto sigil = ImageCache::getFromMemory (BinaryData::sigil_png, BinaryData::sigil_pngSize);
+
+        if (! sigil.isValid())
+            return {};
+
+        const auto width = 2 * kLogoWidth;
+        const auto height = width * sigil.getHeight() / sigil.getWidth();
+        const auto margin = 2 * kLogoMargin;
+
+        Image padded (Image::ARGB, width + 2 * margin, height + 2 * margin, true);
+
+        {
+            Graphics g (padded);
+            g.setImageResamplingQuality (Graphics::highResamplingQuality);
+            g.drawImage (sigil, Rectangle<int> (margin, margin, width, height).toFloat());
+        }
+
+        Image result (Image::ARGB, padded.getWidth(), padded.getHeight(), true);
+        Graphics g (result);
+
+        GlowEffect glow;
+        glow.setGlowProperties (7.0f, ember.withAlpha (0.8f));
+        glow.applyEffect (padded, g, 1.0f, 1.0f);
+
+        return result;
+    }
 }
 
 PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
@@ -20,6 +54,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
       processor (p)
 {
     setLookAndFeel (&sharedLookAndFeel());
+    logo = makeLogo();
 
     addAndMakeVisible (grid);
     grid.onEdit = [this] { pushEdits(); };
@@ -623,17 +658,26 @@ void PitchBoxEditor::paint (Graphics& g)
 
     g.setColour (mist);
     g.setFont (displayFont (19.0f));
-    g.drawText ("ONIRIQUE", header.withTrimmedLeft (22).withWidth (140),
+    if (logo.isValid())
+    {
+        const auto width = (float) logo.getWidth() * 0.5f;
+        const auto height = (float) logo.getHeight() * 0.5f;
+
+        g.drawImage (logo, { 16.0f - (float) kLogoMargin,
+                             (float) header.getCentreY() - height * 0.5f, width, height });
+    }
+
+    g.drawText ("ONIRIQUE", header.withTrimmedLeft (70).withWidth (140),
                 Justification::centredLeft, false);
 
     g.setColour (ember);
     g.setFont (monoFont (12.0f));
-    g.drawText ("PITCHBOX", header.withTrimmedLeft (150).withWidth (160),
+    g.drawText ("PITCHBOX", header.withTrimmedLeft (198).withWidth (160),
                 Justification::centredLeft, false);
 
     g.setColour (haze);
     g.setFont (monoFont (11.0f));
-    g.drawText (status, header.withTrimmedRight (transferMode ? 300 : 170).withTrimmedLeft (476),
+    g.drawText (status, header.withTrimmedRight (transferMode ? 300 : 170).withTrimmedLeft (524),
                 Justification::centredRight, true);
 
     // Side panel ground.
@@ -654,7 +698,7 @@ void PitchBoxEditor::resized()
     if (transferMode)
         transferButton.setBounds (header.removeFromRight (130).withTrimmedRight (-8).reduced (0, 16));
 
-    auto history = header.withTrimmedLeft (236).withWidth (228).reduced (0, 16);
+    auto history = header.withTrimmedLeft (284).withWidth (228).reduced (0, 16);
 
     for (auto* b : { &undoButton, &redoButton, &resetButton })
     {

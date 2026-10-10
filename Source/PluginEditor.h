@@ -78,6 +78,10 @@ private:
     PitchBoxAudioModification* currentModification = nullptr;
     pb::EditState edits;
 
+    /** The sigil with its ember glow already baked in, at twice the size it is
+        drawn so it stays sharp on a scaled display. */
+    Image logo;
+
     String status { "Waiting for an ARA host" };
     float progress = 0.0f;
 

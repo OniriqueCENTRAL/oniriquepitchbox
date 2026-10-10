@@ -92,6 +92,9 @@ juce_add_plugin(OniriquePitchBox
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD ${PITCHBOX_COPY_AFTER_BUILD})
 
+# The Onirique sigil, as it appears in the header of the site.
+juce_add_binary_data(PitchBoxAssets SOURCES Resources/sigil.png)
+
 target_sources(OniriquePitchBox PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
@@ -110,6 +113,7 @@ target_compile_definitions(OniriquePitchBox PUBLIC
 target_link_libraries(OniriquePitchBox
     PRIVATE
         pitchbox_core
+        PitchBoxAssets
         juce::juce_audio_formats
         juce::juce_audio_utils
         juce::juce_audio_processors
