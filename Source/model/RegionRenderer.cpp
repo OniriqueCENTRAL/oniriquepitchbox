@@ -8,38 +8,35 @@ namespace pb
 
 namespace
 {
-    /** Extra curve built beyond what a single block needs, so the curve is
-        rebuilt once every few hundred blocks instead of on every one. Each
-        rebuild is a short burst of arithmetic; making it rarer matters more
-        than making it smaller. */
-    constexpr int64_t kCurveHeadroom = 8192;
-}
+    /** What the renderer hands PSOLA in place of a ratio curve. */
+    struct RatioQuery
+    {
+        const Analysis*  analysis;
+        const EditState* edits;
+    };
 
+    float ratioAtSample (void* context, int64_t sample) noexcept
+    {
+        const auto& q = *static_cast<const RatioQuery*> (context);
+        return pitchRatioAt (q.analysis->track, q.edits->notes, q.edits->settings, sample);
+    }
+}
 void RegionRenderer::prepare (int maxBlockSamples, double sampleRate, float lowestHz)
 {
     maxBlock = std::max (1, maxBlockSamples);
     rate = sampleRate;
 
     scratch.prepare (maxBlock);
+    scratch.forgetWalk();
     renderBuffer.assign ((size_t) maxBlock, 0.0f);
+    gainCurve.assign ((size_t) maxBlock, 1.0f);
 
-    // Worst case look-back: the anchor spacing used by buildPhaseAnchors plus
-    // the furthest a stretched grain can reach at the lowest pitch we track.
-    const auto anchorGap = (int64_t) std::lround (0.05 * sampleRate);
-    const auto longestPeriod = (int64_t) std::ceil (sampleRate / (double) std::max (20.0f, lowestHz));
-    maxLookBack = anchorGap + 4 * longestPeriod + 256;
-
-    curveCapacity = (int64_t) maxBlock + maxLookBack + 4 * longestPeriod + kCurveHeadroom;
-    ratioCurve.assign ((size_t) curveCapacity, 1.0f);
-    gainCurve.assign ((size_t) curveCapacity, 1.0f);
-
-    curveValid = false;
+    (void) lowestHz;
 }
-
 void RegionRenderer::setAnalysis (Analysis::Ptr newAnalysis) noexcept
 {
     analysis = std::move (newAnalysis);
-    curveValid = false;
+    scratch.forgetWalk();
 }
 
 int64_t RegionRenderer::paddingSamples (float formantRatio) const noexcept
@@ -48,11 +45,6 @@ int64_t RegionRenderer::paddingSamples (float formantRatio) const noexcept
         return 0;
 
     return analysis->paddingFor (formantRatio);
-}
-
-int64_t RegionRenderer::lookBackSamples() const noexcept
-{
-    return maxLookBack;
 }
 
 bool RegionRenderer::isPassThrough (const EditState& edits) const noexcept
@@ -82,21 +74,6 @@ bool RegionRenderer::isPassThrough (const EditState& edits) const noexcept
     }
 
     return true;
-}
-
-void RegionRenderer::refreshCurves (const EditState& edits, int64_t from, int64_t count) noexcept
-{
-    if (count > curveCapacity)
-        count = curveCapacity;
-
-    buildPitchRatioCurve (analysis->track, edits.notes, edits.settings,
-                          from, count, ratioCurve.data());
-    buildGainCurve (edits.notes, edits.settings, from, count, gainCurve.data());
-
-    curveStart   = from;
-    curveLength  = count;
-    curveVersion = edits.version;
-    curveValid   = true;
 }
 
 void RegionRenderer::render (const float* src,
@@ -138,30 +115,20 @@ void RegionRenderer::render (const float* src,
         return;
     }
 
-    // The synthesis cursor starts here, and so must the correction curve: the
-    // cursor consults the curve all along the walk, so a curve that began at
-    // the block would change the grain spacing arriving at it.
-    const auto walkStart = psolaWalkStart (analysis->marks, analysis->anchors, firstSample);
-    const auto needFrom  = std::min (walkStart, firstSample);
-    const auto needTo    = lastSample + analysis->paddingFor (edits.settings.formantRatio);
-
-    const bool covered = curveValid
-                         && curveVersion == edits.version
-                         && needFrom >= curveStart
-                         && needTo <= curveStart + curveLength;
-
-    if (! covered)
-        refreshCurves (edits, needFrom, std::min (curveCapacity, needTo - needFrom + kCurveHeadroom));
-
+    // The cursor reads the correction all along its walk, from the last phase
+    // anchor to the end of the block, but only at the centre of each grain. So
+    // it is given a way to ask for the ratio at a sample rather than a curve
+    // with every sample of that walk filled in.
+    RatioQuery query { analysis.get(), &edits };
     PsolaRequest r;
     r.src          = src;
     r.srcOffset    = srcOffset;
     r.srcLength    = srcLength;
     r.marks        = &analysis->marks;
     r.anchors      = &analysis->anchors;
-    r.ratio        = ratioCurve.data();
-    r.ratioOffset  = curveStart;
-    r.ratioLength  = curveLength;
+    r.ratioAt      = &ratioAtSample;
+    r.ratioContext = &query;
+    r.walkKey      = edits.version;
     r.formantRatio = edits.settings.formantRatio;
     r.firstSample  = firstSample;
     r.lastSample   = lastSample;
@@ -170,12 +137,10 @@ void RegionRenderer::render (const float* src,
 
     psolaRender (r, scratch);
 
+    buildGainCurve (edits.notes, edits.settings, firstSample, count, gainCurve.data());
+
     for (int64_t i = 0; i < count; ++i)
-    {
-        const auto g = gainCurve[(size_t) std::clamp<int64_t> (firstSample + i - curveStart,
-                                                               0, curveLength - 1)];
-        dst[firstSample + i - dstOffset] = renderBuffer[(size_t) i] * g;
-    }
+        dst[firstSample + i - dstOffset] = renderBuffer[(size_t) i] * gainCurve[(size_t) i];
 }
 
 } // namespace pb

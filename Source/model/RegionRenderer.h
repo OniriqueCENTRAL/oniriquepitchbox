@@ -34,11 +34,6 @@ public:
     /** Source context the caller must supply either side of the block. */
     int64_t paddingSamples (float formantRatio) const noexcept;
 
-    /** Earliest source sample the renderer will consult for a block starting
-        here. The caller does not need this for reading — paddingSamples covers
-        that — but the ratio cache sizing does. */
-    int64_t lookBackSamples() const noexcept;
-
     /** Renders [firstSample, lastSample) into dst.
 
         @param src        source window, covering at least
@@ -62,24 +57,13 @@ public:
     bool isPassThrough (const EditState& edits) const noexcept;
 
 private:
-    void refreshCurves (const EditState& edits, int64_t from, int64_t count) noexcept;
-
     Analysis::Ptr analysis;
     PsolaScratch  scratch;
 
-    std::vector<float> ratioCurve;
     std::vector<float> gainCurve;
     std::vector<float> renderBuffer;
 
-    int64_t  curveStart   = 0;
-    int64_t  curveLength  = 0;
-    int64_t  curveCapacity = 0;
-    uint64_t curveVersion = 0;
-    bool     curveValid   = false;
-
     int   maxBlock  = 0;
-    double rate     = 48000.0;
-    int64_t maxLookBack = 0;
-};
+    double rate     = 48000.0;};
 
 } // namespace pb

@@ -21,6 +21,11 @@ struct PitchMarkSet
 {
     std::vector<PitchMark> marks;
 
+    /** The widest gap between two marks, or the longest period if that is
+        wider. The renderer needs it on every block, so it is worked out once
+        here; 0 means "not worked out", and it is then measured on demand. */
+    double widestSpacing = 0.0;
+
     /** Index of the mark whose position is closest to the given sample.
         Returns -1 when empty. Marks are sorted, so this is a binary search. */
     int nearest (double samplePosition) const noexcept;

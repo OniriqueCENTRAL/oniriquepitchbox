@@ -172,3 +172,14 @@ target_compile_definitions(pitchbox_snapshot PRIVATE
     $<TARGET_PROPERTY:OniriquePitchBox,COMPILE_DEFINITIONS>)
 
 target_link_libraries(pitchbox_snapshot PRIVATE OniriquePitchBox pitchbox_core PitchBoxAssets)
+
+# Another development tool: the analysis and the renderer run over a real
+# recording, with a report on how regular the result is.
+juce_add_console_app(pitchbox_voicecheck PRODUCT_NAME "pitchbox_voicecheck")
+set_target_properties(pitchbox_voicecheck PROPERTIES EXCLUDE_FROM_ALL TRUE)
+target_sources(pitchbox_voicecheck PRIVATE tools/voicecheck.cpp)
+target_compile_definitions(pitchbox_voicecheck PRIVATE JUCE_USE_CURL=0)
+target_link_libraries(pitchbox_voicecheck PRIVATE
+    pitchbox_core
+    juce::juce_audio_formats
+    juce::juce_recommended_config_flags)

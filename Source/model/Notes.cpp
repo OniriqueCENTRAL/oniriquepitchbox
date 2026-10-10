@@ -270,6 +270,44 @@ namespace
     }
 }
 
+namespace
+{
+    /** True when a note leaves the pitch of its samples alone. */
+    inline bool leavesPitchAlone (const Note& n) noexcept
+    {
+        return (n.bypassed || n.correctAmount <= 0.0f) && std::abs (n.vibratoScale - 1.0f) < 1.0e-6f;
+    }
+
+    /** The ratio for one sample of one note. The curve and the single-sample
+        query both come through here, so they cannot disagree. */
+    inline bool ratioInNote (const PitchTrack& track, const Note& n, double ramp, int64_t s, float& ratio) noexcept
+    {
+        float origCents = 0.0f;
+
+        if (! interpolatedCents (track, s, origCents))
+            return false;
+
+        const auto shift = n.bypassed ? 0.0f
+                                      : n.correctAmount * (n.targetCents - n.centsDetected);
+
+        // The performance inside the note, relative to where the note sits.
+        const auto residual = origCents - n.centsDetected;
+        const auto vib = n.bypassed ? residual : n.vibratoScale * residual;
+
+        // Ease the correction in and out so note edges do not click.
+        const auto dIn  = (double) (s - n.startSample) / ramp;
+        const auto dOut = (double) (n.endSample - 1 - s) / ramp;
+        const auto env  = smoothStep (std::min (dIn, dOut));
+
+        const auto newCents = n.centsDetected + (float) env * (shift + vib)
+                                              + (float) (1.0 - env) * residual;
+        const auto delta = newCents - origCents;
+
+        ratio = (float) std::pow (2.0, delta / 1200.0);
+        return true;
+    }
+}
+
 //==============================================================================
 void buildPitchRatioCurve (const PitchTrack& track,
                            const std::vector<Note>& notes,
@@ -305,40 +343,39 @@ void buildPitchRatioCurve (const PitchTrack& track,
         if (n.startSample >= first + count)
             break;
 
-        if (n.bypassed || n.correctAmount <= 0.0f)
-            if (std::abs (n.vibratoScale - 1.0f) < 1.0e-6f)
-                continue;
+        if (leavesPitchAlone (n))
+            continue;
 
         const auto from = std::max (n.startSample, first);
         const auto to   = std::min (n.endSample, first + count);
-        const auto shift = n.bypassed ? 0.0f
-                                      : n.correctAmount * (n.targetCents - n.centsDetected);
 
         for (auto s = from; s < to; ++s)
-        {
-            float origCents = 0.0f;
-
-            if (! interpolatedCents (track, s, origCents))
-                continue;
-
-            // The performance inside the note, relative to where the note sits.
-            const auto residual = origCents - n.centsDetected;
-            const auto vib = n.bypassed ? residual : n.vibratoScale * residual;
-
-            // Ease the correction in and out so note edges do not click.
-            const auto dIn  = (double) (s - n.startSample) / ramp;
-            const auto dOut = (double) (n.endSample - 1 - s) / ramp;
-            const auto env  = smoothStep (std::min (dIn, dOut));
-
-            const auto newCents = n.centsDetected + (float) env * (shift + vib)
-                                                  + (float) (1.0 - env) * residual;
-            const auto delta = newCents - origCents;
-
-            ratioOut[s - first] = (float) std::pow (2.0, delta / 1200.0);
-        }
+            ratioInNote (track, n, ramp, s, ratioOut[s - first]);
     }
 }
 
+float pitchRatioAt (const PitchTrack& track,
+                    const std::vector<Note>& notes,
+                    const CorrectionSettings& settings,
+                    int64_t sample) noexcept
+{
+    if (! settings.enabled || notes.empty() || track.empty())
+        return 1.0f;
+
+    const auto idx = noteAtSample (notes, sample);
+
+    if (idx < 0)
+        return 1.0f;
+
+    const auto& n = notes[(size_t) idx];
+
+    if (leavesPitchAlone (n) || sample < n.startSample || sample >= n.endSample)
+        return 1.0f;
+
+    float ratio = 1.0f;
+    ratioInNote (track, n, std::max (1.0, settings.transitionSeconds * track.sampleRate), sample, ratio);
+    return ratio;
+}
 //==============================================================================
 void buildGainCurve (const std::vector<Note>& notes,
                      const CorrectionSettings& settings,

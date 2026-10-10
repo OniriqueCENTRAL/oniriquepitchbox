@@ -23,9 +23,17 @@ namespace pb
     same sample renders identically whether the host asks for it in one block,
     in forty, or during an offline bounce.
 
-    Anchors are placed where a phase reset is inaudible: at unvoiced stretches
-    and at note starts, where the waveform restarts anyway.
+    A reset is not free, though. Once the pitch is being changed the cursor no
+    longer falls on the marks, and bringing it back onto one cuts the cycle it
+    was in the middle of short. One cut cycle is nothing; one every few
+    hundredths of a second is a flutter over the whole voice. So anchors go only
+    where the cut cannot be heard — where the voice stops, into a breath or a
+    consonant — and, failing that, as rarely as will still bound the walk:
+    kMaxAnchorGapSeconds apart inside a stretch that is voiced for longer than
+    that. Note starts are deliberately not anchors: in legato singing they come
+    several to the second, in the middle of the sound.
 */
+constexpr double kMaxAnchorGapSeconds = 2.0;
 std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
                                         const std::vector<int64_t>& noteStarts,
                                         double sampleRate);
@@ -54,6 +62,46 @@ struct PsolaScratch
 
     std::vector<double> acc;
     std::vector<double> winSum;
+
+    //==============================================================================
+    /** Where the cursor was, so the next block need not walk there again.
+
+        Anchors can be seconds apart, and a walk from the last one on every
+        block would cost far more than the block itself. But playback asks for
+        blocks in order, and the cursor's path through the take is the same
+        whichever block is being rendered — so a state the last walk passed
+        through, far enough back to be clear of the next block, is exactly the
+        state a fresh walk from the anchor would reach there. Resuming from it
+        changes the cost and nothing else.
+
+        Two are kept: one good for a block starting where the last one started
+        (the second channel of a stereo pair is rendered that way), one for a
+        block starting where the last one ended.
+    */
+    struct WalkState
+    {
+        double s = 0.0;
+        size_t nextAnchor = 0;
+    };
+
+    struct WalkMemo
+    {
+        bool valid = false;
+        int64_t validFrom = 0;   // good for any block starting at or after this
+        WalkState state;
+    };
+
+    void forgetWalk() noexcept
+    {
+        walkKey = 0;
+        atFirst.valid = false;
+        atLast.valid = false;
+    }
+
+    uint64_t walkKey = 0;
+    const PitchMarkSet* walkMarks = nullptr;
+    const std::vector<int64_t>* walkAnchors = nullptr;
+    WalkMemo atFirst, atLast;
 };
 
 /** A render request in absolute audio-source sample coordinates.
@@ -77,6 +125,18 @@ struct PsolaRequest
     const float* ratio       = nullptr;
     int64_t      ratioOffset = 0;
     int64_t      ratioLength = 0;
+
+    /** Used instead when `ratio` is null: the ratio at one absolute sample.
+        The cursor only reads the ratio at grain centres, so a caller that can
+        answer for a single sample need not fill in a curve at all. */
+    float (*ratioAt) (void* context, int64_t sample) noexcept = nullptr;
+    void* ratioContext = nullptr;
+
+    /** Identifies what the cursor's path depends on other than the marks and
+        anchors: in practice, the version of the edits. A non-zero key lets the
+        walk resume from where the scratch last left it; 0 walks from the anchor
+        every time. */
+    uint64_t walkKey = 0;
 
     float formantRatio = 1.0f;
 

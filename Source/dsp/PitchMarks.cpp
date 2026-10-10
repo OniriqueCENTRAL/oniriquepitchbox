@@ -264,6 +264,15 @@ PitchMarkSet detectPitchMarks (const float* samples,
         }
     }
 
+    double widest = 16.0;
+
+    for (const auto& m : result.marks)
+        widest = std::max (widest, (double) m.period);
+
+    for (size_t i = 1; i < result.marks.size(); ++i)
+        widest = std::max (widest, (double) (result.marks[i].position - result.marks[i - 1].position));
+
+    result.widestSpacing = widest;
     return result;
 }
 

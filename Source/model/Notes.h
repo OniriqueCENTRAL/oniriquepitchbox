@@ -134,4 +134,15 @@ void buildGainCurve (const std::vector<Note>& notes,
     non-overlapping, so this is a binary search. */
 int noteAtSample (const std::vector<Note>& notes, int64_t sample) noexcept;
 
+/** The value buildPitchRatioCurve would put at `sample`, on its own.
+
+    The renderer only ever reads the ratio at the centre of a grain, a few
+    hundred times a second, and it reads it all the way back to the last phase
+    anchor. Asking for those points is far cheaper than filling in every sample
+    between them. */
+float pitchRatioAt (const PitchTrack& track,
+                    const std::vector<Note>& notes,
+                    const CorrectionSettings& settings,
+                    int64_t sample) noexcept;
+
 } // namespace pb

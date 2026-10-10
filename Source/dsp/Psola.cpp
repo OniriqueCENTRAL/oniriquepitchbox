@@ -50,6 +50,9 @@ namespace
         of source context and its edges come out wrong. */
     double maxMarkSpacing (const PitchMarkSet& marks) noexcept
     {
+        if (marks.widestSpacing > 0.0)
+            return marks.widestSpacing;
+
         double widest = 16.0;
 
         for (const auto& m : marks.marks)
@@ -88,50 +91,50 @@ std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
     // Anchors always sit on a pitch mark. That matters: the renderer writes a
     // grain centred on the cursor while reading it from the nearest mark, so a
     // cursor sitting exactly on a mark is the same alignment an untouched
-    // render produces. Snapping to an arbitrary sample instead would put a
-    // fraction-of-a-period phase step into the middle of a held note, which is
-    // audible as roughness.
+    // render produces.
     //
-    // A long note needs interior anchors anyway, or the walk back from a block
-    // to its anchor would grow without bound. The spacing is in samples and
-    // derived only from the analysis, so it never depends on the host's buffer
-    // size or on where the user started playback.
-    const int64_t maxGap = (int64_t) std::lround (0.05 * sampleRate);
+    // The spacing is in samples and derived only from the analysis, so it never
+    // depends on the host's buffer size or on where the user started playback.
+    const auto maxGap = (int64_t) std::lround (kMaxAnchorGapSeconds * sampleRate);
 
-    std::vector<bool> wanted (marks.marks.size(), false);
-    wanted[0] = true;
+    // A gap in the voicing shorter than this is a flicker of the detector in
+    // the middle of a note, not a pause, and must not be treated as one.
+    const auto minPause = (int64_t) std::lround (0.03 * sampleRate);
 
-    // Every transition into voiced audio is a natural restart.
-    for (size_t i = 1; i < marks.marks.size(); ++i)
-        if (marks.marks[i].voiced && ! marks.marks[i - 1].voiced)
-            wanted[i] = true;
+    // Where the note boundaries fall no longer matters to the anchors; see the
+    // header for why.
+    (void) noteStarts;
 
-    // So is the start of each detected note.
-    for (auto s : noteStarts)
+    const auto& m = marks.marks;
+
+    anchors.push_back (m.front().position);
+    auto lastAnchor = m.front().position;
+
+    for (size_t i = 1; i < m.size(); ++i)
     {
-        const auto idx = marks.nearest ((double) s);
+        auto wanted = false;
 
-        if (idx >= 0)
-            wanted[(size_t) idx] = true;
+        if (! m[i].voiced && m[i - 1].voiced)
+        {
+            // The voice stops here. If it stays stopped, this is the place.
+            auto j = i;
+
+            while (j < m.size() && ! m[j].voiced)
+                ++j;
+
+            const auto resumes = j < m.size() ? m[j].position : m.back().position;
+            wanted = resumes - m[i].position >= minPause;
+        }
+
+        if (wanted || m[i].position - lastAnchor > maxGap)
+        {
+            anchors.push_back (m[i].position);
+            lastAnchor = m[i].position;
+        }
     }
 
-    int64_t lastAnchor = marks.marks.front().position;
-
-    for (size_t i = 0; i < marks.marks.size(); ++i)
-    {
-        const auto pos = marks.marks[i].position;
-
-        if (! wanted[i] && pos - lastAnchor <= maxGap)
-            continue;
-
-        anchors.push_back (pos);
-        lastAnchor = pos;
-    }
-
-    anchors.erase (std::unique (anchors.begin(), anchors.end()), anchors.end());
     return anchors;
 }
-
 int64_t psolaAnchorBefore (const std::vector<int64_t>& anchors, int64_t sample) noexcept
 {
     if (anchors.empty())
@@ -199,12 +202,16 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
 
     auto ratioAt = [&] (double absSample) -> double
     {
-        if (r.ratio == nullptr || r.ratioLength <= 0)
+        float v = 1.0f;
+
+        if (r.ratio != nullptr && r.ratioLength > 0)
+            v = r.ratio[std::clamp<int64_t> ((int64_t) std::lround (absSample) - r.ratioOffset,
+                                             0, r.ratioLength - 1)];
+        else if (r.ratioAt != nullptr)
+            v = r.ratioAt (r.ratioContext, (int64_t) std::lround (absSample));
+        else
             return 1.0;
 
-        const int64_t i = std::clamp<int64_t> ((int64_t) std::lround (absSample) - r.ratioOffset,
-                                               0, r.ratioLength - 1);
-        const float v = r.ratio[i];
         return (v > 0.0f && std::isfinite (v)) ? (double) std::clamp (v, kMinRatio, kMaxRatio) : 1.0;
     };
 
@@ -236,26 +243,55 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
     static const std::vector<int64_t> noAnchors;
     const auto& anchors = (r.anchors != nullptr) ? *r.anchors : noAnchors;
 
-    double s = anchors.empty() ? (double) marks.marks.front().position
-                               : (double) psolaWalkStart (marks, anchors, first);
+    const auto widest = maxMarkSpacing (marks);
+
+    // No grain centred further back than this can reach the block.
+    const double clearOf = widest / (double) kMinRatio + 64.0;
+
+    PsolaScratch::WalkState state;
+    state.s = anchors.empty() ? (double) marks.marks.front().position
+                              : (double) psolaWalkStart (marks, anchors, first);
 
     // The cursor lands exactly on every anchor it reaches, rather than drifting
     // past it. That is what makes the walk restartable: a render beginning at
     // anchor k and a render that walked all the way from anchor 0 both arrive
     // at anchor k with the cursor in precisely the same place, so they lay down
     // the same grains from there on.
-    size_t nextAnchor = 0;
+    while (state.nextAnchor < anchors.size() && (double) anchors[state.nextAnchor] <= state.s)
+        ++state.nextAnchor;
 
-    while (nextAnchor < anchors.size() && (double) anchors[nextAnchor] <= s)
-        ++nextAnchor;
+    const auto remembers = r.walkKey != 0;
 
-    const auto widest = maxMarkSpacing (marks);
+    if (remembers
+        && scratch.walkKey == r.walkKey
+        && scratch.walkMarks == r.marks
+        && scratch.walkAnchors == r.anchors)
+    {
+        // Resume from the later of the two remembered states that this block
+        // may use — unless the anchor is nearer still, as after a locate.
+        const auto* memo = (scratch.atLast.valid && first >= scratch.atLast.validFrom) ? &scratch.atLast
+                         : (scratch.atFirst.valid && first >= scratch.atFirst.validFrom) ? &scratch.atFirst
+                         : nullptr;
+
+        if (memo != nullptr && memo->state.s >= state.s)
+            state = memo->state;
+    }
+
+    PsolaScratch::WalkMemo atFirst, atLast;
 
     const double endAt = (double) last + 2.0 * widest / (double) kMinRatio;
     const double hardStop = (double) marks.marks.back().position + 4.0 * widest;
 
-    while (s < endAt && s < hardStop)
+    while (state.s < endAt && state.s < hardStop)
     {
+        const double s = state.s;
+
+        if (s <= (double) first - clearOf)
+            atFirst = { true, first, state };
+
+        if (s <= (double) last - clearOf)
+            atLast = { true, last, state };
+
         const int64_t i = marks.nearest (s);
         const auto& m = marks.marks[(size_t) i];
 
@@ -290,15 +326,23 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
 
         double next = s + Ts;
 
-        if (nextAnchor < anchors.size() && next > (double) anchors[nextAnchor])
+        if (state.nextAnchor < anchors.size() && next >= (double) anchors[state.nextAnchor])
         {
-            next = (double) anchors[nextAnchor];
-            ++nextAnchor;
+            next = (double) anchors[state.nextAnchor];
+            ++state.nextAnchor;
         }
 
-        s = next;
+        state.s = next;
     }
 
+    if (remembers)
+    {
+        scratch.walkKey = r.walkKey;
+        scratch.walkMarks = r.marks;
+        scratch.walkAnchors = r.anchors;
+        scratch.atFirst = atFirst;
+        scratch.atLast = atLast;
+    }
     for (int64_t i = 0; i < outLen; ++i)
     {
         const double w = scratch.winSum[(size_t) i];
