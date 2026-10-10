@@ -199,6 +199,8 @@ void TransferSession::prepare (double newSampleRate, int maxBlockSamples, int ch
     numChannels = channels;
 
     renderer.prepare (maxBlock, sampleRate);
+    auditionScratch.assign ((size_t) maxBlock, 0.0f);
+    auditionGain = 0.0f;
 
     // Hosts call this freely, some of them on every transport start, so an
     // armed or running transfer must survive it whenever nothing that matters
@@ -315,7 +317,14 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     }
 
     if (! playing || ! time.hasValue())
+    {
+        renderAudition (buffer);
         return;
+    }
+
+    // Once the transport runs, the take is already sounding where it belongs.
+    auditionGain = 0.0f;
+    auditionSeenSerial = auditionSerial.load();
 
     refreshAudioState();
 
@@ -364,6 +373,107 @@ void TransferSession::process (AudioBuffer<float>& buffer,
 
         done += count;
     }
+}
+
+void TransferSession::renderAudition (AudioBuffer<float>& buffer) noexcept
+{
+    const auto wanted = auditionOn.load();
+    const auto serial = auditionSerial.load();
+
+    if (! wanted && auditionGain <= 0.0f)
+    {
+        auditionSeenSerial = serial;
+        return;
+    }
+
+    refreshAudioState();
+
+    if (audioTake == nullptr || ! approximatelyEqual (audioTake->sampleRate, sampleRate))
+    {
+        auditionGain = 0.0f;
+        return;
+    }
+
+    const auto first = jlimit ((int64) 0, audioTake->numSamples, auditionFirst.load());
+    const auto last = jlimit (first, audioTake->numSamples, auditionLast.load());
+
+    // Short fades at both ends of the stretch, so going round does not click,
+    // and a ramp on the whole thing for the press and the release.
+    const auto edge = (int64) jmax (1.0, 0.01 * sampleRate);
+    const auto step = 1.0f / (float) jmax (1.0, 0.008 * sampleRate);
+
+    if (last - first < 4 * edge)
+    {
+        auditionGain = 0.0f;
+        return;
+    }
+
+    if (serial != auditionSeenSerial)
+    {
+        auditionSeenSerial = serial;
+        auditionPosition = first;
+        auditionGain = 0.0f;
+    }
+
+    const auto numSamples = buffer.getNumSamples();
+    const auto takeChannels = (int) audioTake->channels.size();
+    const auto direction = wanted ? step : -step;
+
+    for (int done = 0; done < numSamples;)
+    {
+        if (auditionPosition < first || auditionPosition >= last)
+            auditionPosition = first;
+
+        const auto count = (int) std::min ((int64) jmin (maxBlock, numSamples - done),
+                                           last - auditionPosition);
+
+        for (int c = 0; c < buffer.getNumChannels(); ++c)
+        {
+            const auto& source = audioTake->channels[(size_t) jmin (c, takeChannels - 1)];
+
+            renderer.render (source.data(),
+                             -audioTake->padding,
+                             (int64) source.size(),
+                             audioEdits,
+                             auditionPosition,
+                             auditionPosition + count,
+                             auditionScratch.data(),
+                             auditionPosition);
+
+            auto* out = buffer.getWritePointer (c) + done;
+            auto gain = auditionGain;
+
+            for (int i = 0; i < count; ++i)
+            {
+                const auto position = auditionPosition + i;
+                const auto fromEdge = std::min (position - first, last - 1 - position);
+                const auto window = jmin (1.0f, (float) fromEdge / (float) edge);
+
+                gain = jlimit (0.0f, 1.0f, gain + direction);
+                out[i] += auditionScratch[(size_t) i] * gain * window;
+            }
+        }
+
+        auditionGain = jlimit (0.0f, 1.0f, auditionGain + direction * (float) count);
+        auditionPosition += count;
+        done += count;
+
+        if (! wanted && auditionGain <= 0.0f)
+            break;
+    }
+}
+
+void TransferSession::startAudition (int64 firstSample, int64 lastSample)
+{
+    auditionFirst.store (firstSample);
+    auditionLast.store (lastSample);
+    ++auditionSerial;
+    auditionOn.store (true);
+}
+
+void TransferSession::stopAudition()
+{
+    auditionOn.store (false);
 }
 
 //==============================================================================

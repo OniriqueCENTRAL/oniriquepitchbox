@@ -208,7 +208,16 @@ complet hors ligne. Les deux qui comptent le plus :
 
 - **Glisser une note** verticalement : la poser sur la gamme. `Alt` pour un
   placement libre.
+- **Maintenir le clic sur une note** : l'écouter, corrigée, en boucle (transport
+  arrêté, mode Transfer uniquement). Glissée, elle s'entend bouger.
+- **Sélection multiple** : `Ctrl` ou `Maj` + clic, ou un cadre tracé dans le
+  vide. Glisser, double-cliquer ou régler MODULATION agit sur toute la sélection.
 - **Double-clic** : exclure la note de la correction (pour un bend voulu).
+- **MODULATION** : sur les notes sélectionnées, ce qu'on garde du mouvement
+  chanté à l'intérieur de la note (vibrato, attaque, dérive). 0 aplatit le
+  trait, 1 le laisse tel que chanté. Double-clic sur le potard : retour à 1.
+- **UNDO / REDO / RESET** : RESET efface les éditions faites à la main et garde
+  les réglages globaux ; il s'annule comme le reste.
 - **Molette** : défilement. `Maj` zoom vertical, `Alt` zoom horizontal.
 - **AMOUNT** : force de la correction sur les notes non touchées à la main.
 - **SPEED** : durée de la transition en début et fin de note. 0 donne le snap

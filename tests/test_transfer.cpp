@@ -261,6 +261,37 @@ int main()
         std::snprintf (d, sizeof d, "differs from the take by %.2g", maxDifference (corrected[0], left));
         check (maxDifference (corrected[0], left) > 0.01, "correction is audible", d);
 
+        // Holding a note: with the transport stopped, that stretch of the take
+        // is heard on top of whatever the track is doing, and only that.
+        {
+            const auto& note = analysis->notes.front();
+            juce::AudioBuffer<float> block (2, kMaxBlock);
+
+            auto peakOfStoppedBlocks = [&] (int blocks)
+            {
+                float peak = 0.0f;
+
+                for (int i = 0; i < blocks; ++i)
+                {
+                    block.clear();
+                    session.process (block, positionAt (kSongStart, false));
+                    peak = std::max (peak, block.getMagnitude (0, kMaxBlock));
+                }
+
+                return peak;
+            };
+
+            const auto before = peakOfStoppedBlocks (4);
+            session.startAudition (note.startSample, note.endSample);
+            const auto during = peakOfStoppedBlocks (200);   // long enough to go round
+            session.stopAudition();
+            peakOfStoppedBlocks (4);
+            const auto after = peakOfStoppedBlocks (4);
+
+            std::snprintf (d, sizeof d, "peak %.2g before, %.2g held, %.2g released", before, during, after);
+            check (before == 0.0f && during > 0.01f && after == 0.0f, "a held note is heard, then stops", d);
+        }
+
         session.saveState (saved);
         std::snprintf (d, sizeof d, "%.0f kB for %.1fs stereo", (double) saved.getSize() / 1024.0,
                        (double) n / kSr);

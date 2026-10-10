@@ -29,6 +29,21 @@ public:
         which is what makes the edit audible on the next buffer. */
     std::function<void()> onEdit;
 
+    /** Fired once per gesture, just before its first change, so the editor can
+        take the snapshot that undo will come back to. */
+    std::function<void()> onBeginEdit;
+
+    /** The note the user is holding down, or -1 on release. */
+    std::function<void (int)> onAudition;
+
+    std::function<void()> onSelectionChanged;
+
+    /** Indices into the edit state's notes. Clicking a note selects it, Ctrl
+        or Shift adds to the selection, and dragging over empty grid draws a
+        box around several; whatever is done to one selected note is done to
+        all of them. */
+    std::vector<int> getSelection() const;
+
     void setAnalysis (pb::Analysis::Ptr);
     void setEditState (pb::EditState* state) { edits = state; repaint(); }
 
@@ -47,6 +62,10 @@ public:
 
 private:
     int noteAt (Point<float>) const;
+    Rectangle<float> blobFor (size_t index) const;
+    bool isSelected (size_t index) const;
+    void fitSelectionToNotes();
+    void selectionChanged();
     float timeToX (int64_t sample) const;
     int64_t xToTime (float x) const;
     float centsToY (float cents) const;
@@ -66,8 +85,13 @@ private:
     int   draggingNote = -1;
     int   hoveredNote = -1;
     float dragStartCents = 0.0f;
-    float dragStartTarget = 0.0f;
-    bool  dragWasTouched = false;
+    bool  dragChanged = false;
+    std::vector<float> dragStartTargets;
+    std::vector<bool>  dragWasTouched;
+
+    std::vector<char> selected, lassoBase;
+    bool lassoing = false;
+    Point<float> lassoStart, lassoEnd;
 
     String status;
     float progress = 0.0f;

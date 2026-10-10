@@ -38,6 +38,20 @@ private:
     void refreshTransfer();
     void updateTransferStatus();
 
+    /** Undo works on whole edit states: they are small, and restoring one is
+        the same operation as any other edit. beginEdit() is called before a
+        change, never after it. */
+    void beginEdit();
+    void undo();
+    void redo();
+    void resetNotes();
+    void restore (pb::EditState);
+    void clearHistory();
+    void updateHistoryButtons();
+
+    void selectionChanged();
+    void auditionNote (int index);
+
     void syncControls();
     void showStatus (const String& headerText, const String& gridText, float gridProgress);
     pb::Analysis::Ptr currentAnalysis() const;
@@ -47,8 +61,10 @@ private:
     NoteGrid grid;
 
     ComboBox rootBox, scaleBox;
-    Slider amountSlider, transitionSlider, formantSlider;
-    Label amountLabel, transitionLabel, formantLabel;
+    Slider amountSlider, transitionSlider, formantSlider, modulationSlider;
+    Label amountLabel, transitionLabel, formantLabel, modulationLabel;
+    TextButton undoButton { "UNDO" }, redoButton { "REDO" }, resetButton { "RESET" };
+    std::vector<pb::EditState> undoStack, redoStack;
     TextButton detectKeyButton { "DETECT KEY" };
     TextButton enabledButton { "CORRECTION" };
     TextButton transferButton { "TRANSFER" };

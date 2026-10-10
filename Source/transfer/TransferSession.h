@@ -84,6 +84,13 @@ public:
 
     pb::Analysis::Ptr getAnalysis() const;
 
+    /** Plays one stretch of the take, corrected, round and round while the
+        transport is stopped: what the user hears while holding a note. It
+        follows the edits like everything else, so a note being dragged is
+        heard moving. */
+    void startAudition (int64 firstSample, int64 lastSample);
+    void stopAudition();
+
     pb::EditState getEdits() const;
     uint64_t getEditVersion() const;
     void setEdits (pb::EditState);
@@ -104,6 +111,7 @@ private:
     void finishCapture();
     bool pushToFifo (const AudioBuffer<float>&) noexcept;
     void refreshAudioState() noexcept;
+    void renderAudition (AudioBuffer<float>&) noexcept;
 
     /** Replaces the take and starts analysing the new one. */
     void install (TransferTake::Ptr newTake,
@@ -128,6 +136,10 @@ private:
     std::atomic<int64> captureStart { 0 };
     std::atomic<int64> recordedSamples { 0 };
 
+    std::atomic<bool>  auditionOn { false };
+    std::atomic<int>   auditionSerial { 0 };
+    std::atomic<int64> auditionFirst { 0 }, auditionLast { 0 };
+
     // Capture: the audio thread writes the fifo, the timer empties it.
     AbstractFifo fifo { 1 };
     AudioBuffer<float> fifoBuffer;
@@ -144,6 +156,11 @@ private:
     pb::Analysis::Ptr audioAnalysis;
     pb::EditState audioEdits;
     uint64_t audioRevision = 0;
+
+    std::vector<float> auditionScratch;
+    int64 auditionPosition = 0;
+    int   auditionSeenSerial = 0;
+    float auditionGain = 0.0f;
 
     double sampleRate = 0.0;
     int maxBlock = 512;

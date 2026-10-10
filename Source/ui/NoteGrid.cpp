@@ -21,6 +21,11 @@ NoteGrid::NoteGrid()
 void NoteGrid::setAnalysis (pb::Analysis::Ptr newAnalysis)
 {
     analysis = std::move (newAnalysis);
+
+    // A different take: the indices no longer mean the same notes.
+    selected.clear();
+    selectionChanged();
+
     zoomToFit();
     repaint();
 }
@@ -110,6 +115,16 @@ void NoteGrid::paint (Graphics& g)
 
     drawPitchCurve (g);
     drawNotes (g);
+
+    if (lassoing)
+    {
+        const Rectangle<float> box (lassoStart, lassoEnd);
+
+        g.setColour (ember.withAlpha (0.12f));
+        g.fillRect (box);
+        g.setColour (ember.withAlpha (0.8f));
+        g.drawRect (box, 1.0f);
+    }
 
     if (progress > 0.0f && progress < 1.0f)
     {
@@ -278,7 +293,8 @@ void NoteGrid::drawNotes (Graphics& g)
         }
 
         const auto touched = i < edits->touched.size() && edits->touched[i];
-        const auto hovered = (int) i == hoveredNote || (int) i == draggingNote;
+        const auto picked = isSelected (i);
+        const auto hovered = picked || (int) i == hoveredNote || (int) i == draggingNote;
 
         if (n.bypassed)
         {
@@ -297,6 +313,12 @@ void NoteGrid::drawNotes (Graphics& g)
 
             g.setColour (touched ? bone : ember.withAlpha (0.85f));
             g.drawRoundedRectangle (blob, 3.0f, touched ? 1.6f : 1.0f);
+        }
+
+        if (picked)
+        {
+            g.setColour (Colours::white);
+            g.drawRoundedRectangle (blob.expanded (2.0f), 4.5f, 1.6f);
         }
 
         // How far off the note was, shown only when there is room for it.
@@ -318,22 +340,54 @@ int NoteGrid::noteAt (Point<float> p) const
     if (edits == nullptr)
         return -1;
 
-    const auto rowHeight = (float) getHeight() / jmax (1.0f, (viewHighCents - viewLowCents) / 100.0f);
-    const auto noteHeight = jlimit (5.0f, 26.0f, rowHeight * 0.74f);
-
     for (size_t i = 0; i < edits->notes.size(); ++i)
-    {
-        const auto& n = edits->notes[i];
-        const Rectangle<float> blob (timeToX (n.startSample),
-                                     centsToY (n.resultCents()) - noteHeight * 0.5f,
-                                     jmax (3.0f, timeToX (n.endSample) - timeToX (n.startSample)),
-                                     noteHeight);
-
-        if (blob.expanded (0.0f, 3.0f).contains (p))
+        if (blobFor (i).expanded (0.0f, 3.0f).contains (p))
             return (int) i;
-    }
 
     return -1;
+}
+
+Rectangle<float> NoteGrid::blobFor (size_t index) const
+{
+    const auto rowHeight = (float) getHeight() / jmax (1.0f, (viewHighCents - viewLowCents) / 100.0f);
+    const auto noteHeight = jlimit (5.0f, 26.0f, rowHeight * 0.74f);
+    const auto& n = edits->notes[index];
+
+    return { timeToX (n.startSample),
+             centsToY (n.resultCents()) - noteHeight * 0.5f,
+             jmax (3.0f, timeToX (n.endSample) - timeToX (n.startSample)),
+             noteHeight };
+}
+
+//==============================================================================
+bool NoteGrid::isSelected (size_t index) const
+{
+    return index < selected.size() && selected[index] != 0;
+}
+
+void NoteGrid::fitSelectionToNotes()
+{
+    selected.resize (edits != nullptr ? edits->notes.size() : (size_t) 0, 0);
+}
+
+void NoteGrid::selectionChanged()
+{
+    if (onSelectionChanged)
+        onSelectionChanged();
+}
+
+std::vector<int> NoteGrid::getSelection() const
+{
+    std::vector<int> result;
+
+    if (edits == nullptr)
+        return result;
+
+    for (size_t i = 0; i < edits->notes.size(); ++i)
+        if (isSelected (i))
+            result.push_back ((int) i);
+
+    return result;
 }
 
 void NoteGrid::mouseMove (const MouseEvent& e)
@@ -351,28 +405,97 @@ void NoteGrid::mouseMove (const MouseEvent& e)
 
 void NoteGrid::mouseDown (const MouseEvent& e)
 {
-    draggingNote = noteAt (e.position);
+    draggingNote = -1;
+    lassoing = false;
 
-    if (draggingNote < 0 || edits == nullptr)
+    if (edits == nullptr)
         return;
 
-    auto& n = edits->notes[(size_t) draggingNote];
+    fitSelectionToNotes();
+
+    const auto hit = noteAt (e.position);
+    const auto adding = e.mods.isCtrlDown() || e.mods.isShiftDown() || e.mods.isCommandDown();
+
+    if (hit < 0)
+    {
+        // Empty grid: start a box, the way a desktop does.
+        if (! adding)
+            std::fill (selected.begin(), selected.end(), (char) 0);
+
+        lassoing = true;
+        lassoStart = lassoEnd = e.position;
+        lassoBase = selected;
+
+        selectionChanged();
+        repaint();
+        return;
+    }
+
+    if (adding)
+    {
+        selected[(size_t) hit] = selected[(size_t) hit] != 0 ? (char) 0 : (char) 1;
+        selectionChanged();
+        repaint();
+
+        if (selected[(size_t) hit] == 0)
+            return;
+    }
+    else if (selected[(size_t) hit] == 0)
+    {
+        std::fill (selected.begin(), selected.end(), (char) 0);
+        selected[(size_t) hit] = 1;
+        selectionChanged();
+    }
+
+    draggingNote = hit;
+    dragChanged = false;
     dragStartCents = yToCents (e.position.y);
-    dragStartTarget = n.targetCents;
-    dragWasTouched = (size_t) draggingNote < edits->touched.size()
-                     && edits->touched[(size_t) draggingNote];
+
+    dragStartTargets.resize (edits->notes.size());
+    dragWasTouched.resize (edits->notes.size());
+
+    for (size_t i = 0; i < edits->notes.size(); ++i)
+    {
+        dragStartTargets[i] = edits->notes[i].targetCents;
+        dragWasTouched[i] = i < edits->touched.size() && edits->touched[i];
+    }
+
+    if (onAudition)
+        onAudition (hit);
+
     repaint();
 }
 
 void NoteGrid::mouseDrag (const MouseEvent& e)
 {
-    if (draggingNote < 0 || edits == nullptr)
+    if (edits == nullptr)
         return;
 
-    auto& n = edits->notes[(size_t) draggingNote];
+    if (lassoing)
+    {
+        lassoEnd = e.position;
+        const Rectangle<float> box (lassoStart, lassoEnd);
 
+        fitSelectionToNotes();
+
+        for (size_t i = 0; i < selected.size(); ++i)
+        {
+            const auto inBase = i < lassoBase.size() && lassoBase[i] != 0;
+            selected[i] = (inBase || box.intersects (blobFor (i))) ? (char) 1 : (char) 0;
+        }
+
+        selectionChanged();
+        repaint();
+        return;
+    }
+
+    if (draggingNote < 0 || (size_t) draggingNote >= dragStartTargets.size()
+        || edits->notes.size() != dragStartTargets.size())
+        return;
+
+    const auto grabbed = (size_t) draggingNote;
     const auto delta = yToCents (e.position.y) - dragStartCents;
-    auto target = dragStartTarget + delta;
+    auto target = dragStartTargets[grabbed] + delta;
 
     // Free drag with a modifier, otherwise land on the scale. Dragging a note
     // by hand should put it exactly where the user means it, and most of the
@@ -380,14 +503,39 @@ void NoteGrid::mouseDrag (const MouseEvent& e)
     if (! e.mods.isAltDown())
         target = edits->settings.scale.snapCents (target);
 
-    n.targetCents = target;
+    // Every selected note moves by what the grabbed one moved, so a phrase
+    // keeps its shape when it is shifted as a whole.
+    const auto shift = target - dragStartTargets[grabbed];
 
-    // Grabbing a note means you want it moved, so give it full correction
-    // unless the user had already dialled it back.
-    if (! dragWasTouched)
-        n.correctAmount = 1.0f;
+    if (! dragChanged)
+    {
+        if (approximatelyEqual (shift, 0.0f))
+            return;   // a click, not a drag: nothing to undo yet
 
-    edits->markTouched (draggingNote);
+        dragChanged = true;
+
+        if (onBeginEdit)
+            onBeginEdit();
+    }
+
+    edits->touched.resize (edits->notes.size(), false);
+
+    for (size_t i = 0; i < edits->notes.size(); ++i)
+    {
+        if (i != grabbed && ! isSelected (i))
+            continue;
+
+        edits->notes[i].targetCents = dragStartTargets[i] + shift;
+
+        // Grabbing a note means you want it moved, so give it full correction
+        // unless the user had already dialled it back.
+        if (! dragWasTouched[i])
+            edits->notes[i].correctAmount = 1.0f;
+
+        edits->touched[i] = true;
+    }
+
+    edits->bump();
 
     if (onEdit)
         onEdit();
@@ -397,7 +545,11 @@ void NoteGrid::mouseDrag (const MouseEvent& e)
 
 void NoteGrid::mouseUp (const MouseEvent&)
 {
+    if (draggingNote >= 0 && onAudition)
+        onAudition (-1);
+
     draggingNote = -1;
+    lassoing = false;
     repaint();
 }
 
@@ -408,13 +560,26 @@ void NoteGrid::mouseDoubleClick (const MouseEvent& e)
     if (index < 0 || edits == nullptr)
         return;
 
-    auto& n = edits->notes[(size_t) index];
+    if (onBeginEdit)
+        onBeginEdit();
 
     // Double click takes a note out of the correction entirely: the usual
     // reason a corrector sounds wrong is one deliberate bend it should not
-    // have touched.
-    n.bypassed = ! n.bypassed;
-    edits->markTouched (index);
+    // have touched. With several selected, they all follow the one clicked.
+    const auto bypass = ! edits->notes[(size_t) index].bypassed;
+
+    edits->touched.resize (edits->notes.size(), false);
+
+    for (size_t i = 0; i < edits->notes.size(); ++i)
+    {
+        if ((int) i != index && ! (isSelected ((size_t) index) && isSelected (i)))
+            continue;
+
+        edits->notes[i].bypassed = bypass;
+        edits->touched[i] = true;
+    }
+
+    edits->bump();
 
     if (onEdit)
         onEdit();
