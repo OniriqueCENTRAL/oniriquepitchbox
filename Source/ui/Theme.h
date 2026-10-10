@@ -70,6 +70,19 @@ public:
 
     juce::Font getLabelFont (juce::Label&) override;
 
+    // Drop-down menus: a dark red card, a lit dot beside the current choice.
+    void drawPopupMenuBackgroundWithOptions (juce::Graphics&, int width, int height,
+                                             const juce::PopupMenu::Options&) override;
+    void drawPopupMenuItemWithOptions (juce::Graphics&, const juce::Rectangle<int>& area, bool highlighted,
+                                       const juce::PopupMenu::Item&, const juce::PopupMenu::Options&) override;
+    void drawPopupMenuSectionHeaderWithOptions (juce::Graphics&, const juce::Rectangle<int>& area,
+                                                const juce::String& name, const juce::PopupMenu::Options&) override;
+    void getIdealPopupMenuItemSizeWithOptions (const juce::String& text, bool isSeparator, int standardHeight,
+                                               int& idealWidth, int& idealHeight,
+                                               const juce::PopupMenu::Options&) override;
+    int getPopupMenuBorderSizeWithOptions (const juce::PopupMenu::Options&) override;
+    int getMenuWindowFlags() override;
+
     /** A label carrying the "pill" property is drawn as the value readout that
         sits under every knob of the range: a dark capsule with its LED. */
     void drawLabel (juce::Graphics&, juce::Label&) override;

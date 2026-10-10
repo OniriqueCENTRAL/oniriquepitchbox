@@ -15,6 +15,32 @@ namespace
         return laf;
     }
 
+    constexpr int kHeaderHeight = 68;
+    constexpr int kTitleLeft = 72;
+
+    Font titleFont (bool heavy)
+    {
+        return displayFont (23.0f, heavy).withExtraKerningFactor (0.09f);
+    }
+
+    /** A four-pointed star, as on the Onirique sigil. */
+    Path star (Point<float> centre, float radius)
+    {
+        Path p;
+        const auto waist = radius * 0.16f;
+
+        p.startNewSubPath (centre.x, centre.y - radius);
+        p.lineTo (centre.x + waist, centre.y - waist);
+        p.lineTo (centre.x + radius, centre.y);
+        p.lineTo (centre.x + waist, centre.y + waist);
+        p.lineTo (centre.x, centre.y + radius);
+        p.lineTo (centre.x - waist, centre.y + waist);
+        p.lineTo (centre.x - radius, centre.y);
+        p.lineTo (centre.x - waist, centre.y - waist);
+        p.closeSubPath();
+        return p;
+    }
+
     constexpr int kLogoWidth = 44;
     constexpr int kLogoMargin = 8;   // room for the glow around it
 
@@ -59,6 +85,8 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     addAndMakeVisible (grid);
     grid.onEdit = [this] { pushEdits(); };
 
+    rootBox.addSectionHeading ("KEY");
+
     for (int i = 0; i < 12; ++i)
         rootBox.addItem (pb::noteName (i), i + 1);
 
@@ -71,6 +99,8 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
         pushEdits();
     };
     addAndMakeVisible (rootBox);
+
+    scaleBox.addSectionHeading ("SCALE");
 
     for (int i = 0; i < (int) pb::ScaleType::numTypes; ++i)
         if ((pb::ScaleType) i != pb::ScaleType::custom)
@@ -216,8 +246,8 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     analysisQueue->addListener (this);
 
     setResizable (true, true);
-    setResizeLimits (980, 680, 2400, 1500);
-    setSize (1160, 760);
+    setResizeLimits (1060, 690, 2400, 1500);
+    setSize (1200, 770);
 
     refreshTarget();
     startTimerHz (30);
@@ -509,7 +539,7 @@ void PitchBoxEditor::showStatus (const String& headerText, const String& gridTex
     if (headerText != status)
     {
         status = headerText;
-        repaint (getLocalBounds().removeFromTop (58));
+        repaint (getLocalBounds().removeFromTop (kHeaderHeight));
     }
 
     if (gridText != gridStatus || ! approximatelyEqual (newGridProgress, gridProgress))
@@ -669,6 +699,10 @@ void PitchBoxEditor::timerCallback()
     updatePlayhead();
     updateValueReadouts();
 
+    // Only what moves in the header: the light along its foot, and the stars.
+    repaint (0, kHeaderHeight - 8, getWidth(), 9);
+    repaint (titleRight(), 0, 56, kHeaderHeight - 8);
+
     if (transferMode && getARAEditorView() == nullptr)
     {
         updateTransferStatus();
@@ -707,68 +741,135 @@ void PitchBoxEditor::timerCallback()
 }
 
 //==============================================================================
-void PitchBoxEditor::paint (Graphics& g)
+int PitchBoxEditor::titleRight() const
 {
-    g.fillAll (night);
+    return kTitleLeft
+           + roundToInt (GlyphArrangement::getStringWidth (titleFont (true), "ONIRIQUE")
+                         + GlyphArrangement::getStringWidth (titleFont (false), "PITCHBOX"))
+           + 12;
+}
 
-    auto header = getLocalBounds().removeFromTop (58);
+void PitchBoxEditor::paintHeader (Graphics& g, Rectangle<int> header)
+{
+    const auto area = header.toFloat();
+    const auto seconds = (Time::getMillisecondCounterHiRes() - openedAt) * 0.001;
 
-    g.setGradientFill (ColourGradient (deep2, 0.0f, 0.0f, night, 0.0f, (float) header.getBottom(), false));
-    g.fillRect (header);
+    // The crimson of the range: darkest at the sigil, brightest behind the
+    // name, and falling away again to the right and towards the foot.
+    ColourGradient ground (Colour (0xff2c060b), 0.0f, 0.0f, Colour (0xff3b080e), area.getRight(), 0.0f, false);
+    ground.addColour (0.32, Colour (0xff7a0e1c));
+    ground.addColour (0.7, Colour (0xff5a0a14));
+    g.setGradientFill (ground);
+    g.fillRect (area);
 
-    g.setColour (line);
-    g.drawHorizontalLine (header.getBottom() - 1, 0.0f, (float) getWidth());
+    g.setGradientFill (ColourGradient (Colours::transparentBlack, 0.0f, area.getY(),
+                                       Colour (0x73000000), 0.0f, area.getBottom(), false));
+    g.fillRect (area);
 
-    g.setColour (mist);
-    g.setFont (displayFont (19.0f));
     if (logo.isValid())
     {
         const auto width = (float) logo.getWidth() * 0.5f;
         const auto height = (float) logo.getHeight() * 0.5f;
 
-        g.drawImage (logo, { 16.0f - (float) kLogoMargin,
-                             (float) header.getCentreY() - height * 0.5f, width, height });
+        g.drawImage (logo, { 16.0f - (float) kLogoMargin, area.getCentreY() - height * 0.5f, width, height });
     }
 
-    g.drawText ("ONIRIQUE", header.withTrimmedLeft (70).withWidth (140),
+    // The name: the house in white, the product in a paler weight beside it.
+    const auto nameWidth = GlyphArrangement::getStringWidth (titleFont (true), "ONIRIQUE");
+
+    g.setColour (Colours::white);
+    g.setFont (titleFont (true));
+    g.drawText ("ONIRIQUE", area.withTrimmedLeft ((float) kTitleLeft).withWidth (nameWidth + 4.0f),
                 Justification::centredLeft, false);
 
-    g.setColour (ember);
-    g.setFont (monoFont (12.0f));
-    g.drawText ("PITCHBOX", header.withTrimmedLeft (198).withWidth (160),
+    g.setColour (Colour (0xffe3b5ba));
+    g.setFont (titleFont (false));
+    g.drawText ("PITCHBOX", area.withTrimmedLeft ((float) kTitleLeft + nameWidth + 10.0f).withWidth (260.0f),
                 Justification::centredLeft, false);
 
-    g.setColour (haze);
+    // Stars beside it, each breathing at its own pace.
+    struct Spark { float x, y, radius, rate, offset; };
+    static const Spark sparks[] = { { 10.0f, 17.0f, 5.5f, 0.9f, 0.0f },  { 27.0f, 11.0f, 3.0f, 1.3f, 1.7f },
+                                    { 38.0f, 24.0f, 4.0f, 0.7f, 3.1f },  { 18.0f, 42.0f, 4.5f, 1.1f, 4.4f },
+                                    { 34.0f, 48.0f, 2.5f, 1.6f, 2.3f },  { 46.0f, 38.0f, 2.0f, 1.0f, 5.2f } };
+
+    const auto sparkLeft = (float) titleRight();
+
+    for (const auto& s : sparks)
+    {
+        const auto glow = 0.5f + 0.5f * (float) std::sin (seconds * s.rate * 2.0 + s.offset);
+
+        g.setColour (Colours::white.withAlpha (0.25f + 0.65f * glow));
+        g.fillPath (star ({ sparkLeft + s.x, area.getY() + s.y }, s.radius * (0.8f + 0.2f * glow)));
+    }
+
+    g.setColour (Colour (0xffe9c9cc));
     g.setFont (monoFont (11.0f));
-    g.drawText (status, header.withTrimmedRight (transferMode ? 300 : 170).withTrimmedLeft (524),
+    g.drawText (status, header.withTrimmedRight (transferMode ? 300 : 170).withTrimmedLeft (titleRight() + 56 + 240),
                 Justification::centredRight, true);
 
+    // The foot of the header: a faint rule, and a streak of light that runs
+    // along it from left to right and comes round again.
+    const auto footY = area.getBottom() - 2.0f;
+
+    g.setColour (Colour (0x30ffd2d6));
+    g.fillRect (0.0f, footY, area.getWidth(), 1.0f);
+
+    const auto length = jmax (160.0f, area.getWidth() * 0.22f);
+    const auto cycle = 3.6;
+    const auto travelled = (float) (std::fmod (seconds, cycle) / cycle);
+    const auto head = -40.0f + travelled * (area.getWidth() + length + 80.0f);
+    const auto tail = head - length;
+
+    // Bright at the head, trailing off behind it, with a halo around the lot.
+    ColourGradient halo (Colours::transparentBlack, tail, 0.0f, Colours::transparentBlack, head + 14.0f, 0.0f, false);
+    halo.addColour (0.82, ember.withAlpha (0.55f));
+    g.setGradientFill (halo);
+    g.fillRect (tail, footY - 3.0f, length + 14.0f, 7.0f);
+
+    ColourGradient streak (Colours::transparentWhite, tail, 0.0f, Colours::transparentWhite, head + 6.0f, 0.0f, false);
+    streak.addColour (0.55, emberLit.withAlpha (0.9f));
+    streak.addColour (0.93, Colours::white);
+    g.setGradientFill (streak);
+    g.fillRoundedRectangle (tail, footY - 0.5f, length + 6.0f, 2.0f, 1.0f);
+}
+
+void PitchBoxEditor::paint (Graphics& g)
+{
+    g.fillAll (night);
+
+    paintHeader (g, getLocalBounds().removeFromTop (kHeaderHeight));
+
     // Side panel ground.
-    auto side = getLocalBounds().withTop (58).removeFromLeft (178);
+    auto side = getLocalBounds().withTop (kHeaderHeight).removeFromLeft (178);
     g.setColour (deep);
     g.fillRect (side);
     g.setColour (line);
     g.drawVerticalLine (side.getRight(), (float) side.getY(), (float) side.getBottom());
 }
-
 void PitchBoxEditor::resized()
 {
     auto bounds = getLocalBounds();
-    auto header = bounds.removeFromTop (58);
+    auto header = bounds.removeFromTop (kHeaderHeight);
 
-    enabledButton.setBounds (header.removeFromRight (150).reduced (14, 16));
+    // Controls sit in the upper part of the header, clear of the light that
+    // runs along its foot.
+    const auto row = header.withTrimmedBottom (6).withSizeKeepingCentre (header.getWidth(), 30);
+    auto right = row;
+
+    enabledButton.setBounds (right.removeFromRight (150).withTrimmedRight (14).withTrimmedLeft (0));
+    right.removeFromRight (8);
 
     if (transferMode)
-        transferButton.setBounds (header.removeFromRight (130).withTrimmedRight (-8).reduced (0, 16));
+        transferButton.setBounds (right.removeFromRight (122));
 
-    auto history = header.withTrimmedLeft (284).withWidth (228).reduced (0, 16);
+    auto history = row.withTrimmedLeft (titleRight() + 56).withWidth (234);
 
     for (auto* b : { &undoButton, &redoButton, &resetButton })
     {
         b->setBounds (history.removeFromLeft (72));
         history.removeFromLeft (6);
     }
-
     auto side = bounds.removeFromLeft (178).reduced (14, 16);
 
     side.removeFromTop (4);

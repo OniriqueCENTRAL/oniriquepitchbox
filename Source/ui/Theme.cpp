@@ -13,7 +13,9 @@ OniriqueLookAndFeel::OniriqueLookAndFeel()
     setColour (ComboBox::textColourId, mist);
     setColour (ComboBox::outlineColourId, line);
     setColour (ComboBox::arrowColourId, ember);
-    setColour (PopupMenu::backgroundColourId, deep2);
+    // Just short of opaque: that is what makes the menu's window one that can
+    // have rounded corners.
+    setColour (PopupMenu::backgroundColourId, deep2.withAlpha (0.99f));
     setColour (PopupMenu::textColourId, mist);
     setColour (PopupMenu::highlightedBackgroundColourId, ember);
     setColour (PopupMenu::highlightedTextColourId, Colours::white);
@@ -195,6 +197,98 @@ void OniriqueLookAndFeel::positionComboBoxText (ComboBox& box, Label& label)
 {
     label.setBounds (14, 0, box.getWidth() - 34, box.getHeight());
     label.setFont (capsFont (10.5f));
+}
+
+//==============================================================================
+void OniriqueLookAndFeel::drawPopupMenuBackgroundWithOptions (Graphics& g, int width, int height,
+                                                              const PopupMenu::Options&)
+{
+    const auto bounds = Rectangle<float> (0.0f, 0.0f, (float) width, (float) height).reduced (0.5f);
+
+    g.setGradientFill (ColourGradient (Colour (0xfa3d0911), 0.0f, 0.0f,
+                                       Colour (0xfa1c0508), 0.0f, (float) height, false));
+    g.fillRoundedRectangle (bounds, 12.0f);
+
+    g.setColour (Colour (0x38ffd2d6));
+    g.drawRoundedRectangle (bounds, 12.0f, 1.0f);
+}
+
+void OniriqueLookAndFeel::drawPopupMenuItemWithOptions (Graphics& g, const Rectangle<int>& area, bool highlighted,
+                                                        const PopupMenu::Item& item, const PopupMenu::Options&)
+{
+    if (item.isSeparator)
+    {
+        g.setColour (Colour (0x26ffd2d6));
+        g.fillRect (area.reduced (14, 0).withSizeKeepingCentre (area.getWidth() - 28, 1));
+        return;
+    }
+
+    const auto bounds = area.toFloat();
+
+    if (highlighted && item.isEnabled)
+    {
+        g.setColour (Colour (0x1cffd2d6));
+        g.fillRoundedRectangle (bounds.reduced (6.0f, 1.0f), 7.0f);
+    }
+
+    if (item.isTicked)
+    {
+        const auto led = Rectangle<float> (8.0f, 8.0f).withCentre ({ bounds.getX() + 20.0f, bounds.getCentreY() });
+
+        g.setColour (ember.withAlpha (0.35f));
+        g.fillEllipse (led.expanded (3.5f));
+        g.setColour (emberLit);
+        g.fillEllipse (led);
+    }
+
+    g.setColour ((item.isTicked ? Colours::white : mist.withAlpha (0.88f)).withMultipliedAlpha (item.isEnabled ? 1.0f : 0.35f));
+    g.setFont (displayFont (13.5f, item.isTicked));
+    g.drawText (item.text, bounds.withTrimmedLeft (36.0f).withTrimmedRight (12.0f),
+                Justification::centredLeft, true);
+}
+
+void OniriqueLookAndFeel::drawPopupMenuSectionHeaderWithOptions (Graphics& g, const Rectangle<int>& area,
+                                                                 const String& name, const PopupMenu::Options&)
+{
+    const auto font = capsFont (9.5f).withExtraKerningFactor (0.3f);
+    const auto textWidth = GlyphArrangement::getStringWidth (font, name);
+    const auto bounds = area.toFloat().withTrimmedLeft (22.0f).withTrimmedRight (22.0f);
+
+    g.setColour (haze);
+    g.setFont (font);
+    g.drawText (name, bounds, Justification::centredLeft, false);
+
+    // The rule that runs from the heading to the edge of the card.
+    g.setColour (Colour (0x26ffd2d6));
+    g.fillRect (bounds.withTrimmedLeft (textWidth + 12.0f).withSizeKeepingCentre (
+                    jmax (0.0f, bounds.getWidth() - textWidth - 12.0f), 1.0f)
+                    .withX (bounds.getX() + textWidth + 12.0f));
+}
+
+void OniriqueLookAndFeel::getIdealPopupMenuItemSizeWithOptions (const String& text, bool isSeparator, int,
+                                                                int& idealWidth, int& idealHeight,
+                                                                const PopupMenu::Options&)
+{
+    if (isSeparator)
+    {
+        idealWidth = 60;
+        idealHeight = 13;
+        return;
+    }
+
+    idealWidth = roundToInt (GlyphArrangement::getStringWidth (displayFont (13.5f), text)) + 56;
+    idealHeight = 30;
+}
+
+int OniriqueLookAndFeel::getPopupMenuBorderSizeWithOptions (const PopupMenu::Options&)
+{
+    return 10;
+}
+
+int OniriqueLookAndFeel::getMenuWindowFlags()
+{
+    // No system shadow: it is square, and the card is not.
+    return 0;
 }
 
 Font OniriqueLookAndFeel::getLabelFont (Label& label)

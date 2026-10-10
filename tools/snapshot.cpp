@@ -2,7 +2,10 @@
 // so a change to the interface can be looked at straight from the build.
 //
 //   pitchbox_snapshot out.png [width height]
+//   pitchbox_snapshot --menu out.png      the drop-down menu on its own
 #include "../Source/PluginProcessor.h"
+#include "../Source/dsp/Scale.h"
+#include "../Source/ui/Theme.h"
 #include "../tests/TestSignal.h"
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
@@ -46,6 +49,10 @@ std::vector<float> makeTake()
 
 /** Walks the plugin through a transfer on the message thread, one timer tick
     at a time, then takes the picture and ends the program. */
+}
+
+namespace
+{
 struct Director final : juce::Timer
 {
     Director (juce::File destination, int width, int height) : file (std::move (destination))
@@ -61,25 +68,25 @@ struct Director final : juce::Timer
         startTimer (50);
     }
 
-    void play (const std::vector<float>& take)
+    void play (const std::vector<float>& audio)
     {
         juce::AudioBuffer<float> buffer (2, kBlock);
         juce::MidiBuffer midi;
 
-        for (size_t pos = 0; pos < take.size(); pos += kBlock)
+        for (size_t pos = 0; pos < audio.size(); pos += kBlock)
         {
-            const auto count = (int) std::min ((size_t) kBlock, take.size() - pos);
+            const auto count = (int) std::min ((size_t) kBlock, audio.size() - pos);
             juce::AudioBuffer<float> block (buffer.getArrayOfWritePointers(), 2, count);
 
-            block.copyFrom (0, 0, take.data() + pos, count);
-            block.copyFrom (1, 0, take.data() + pos, count);
+            block.copyFrom (0, 0, audio.data() + pos, count);
+            block.copyFrom (1, 0, audio.data() + pos, count);
 
             head.info.setIsPlaying (true);
             head.info.setTimeInSamples (kSongStart + (juce::int64) pos);
             processor->processBlock (block, midi);
         }
 
-        stoppedAt (kSongStart + (juce::int64) take.size());
+        stoppedAt (kSongStart + (juce::int64) audio.size());
     }
 
     void stoppedAt (juce::int64 position)
@@ -158,12 +165,83 @@ struct Director final : juce::Timer
 };
 }
 
+/** Lays a menu out the way JUCE would and draws it with the plugin's look, a
+    real pop-up being a window of its own that a snapshot cannot reach. */
+bool writeMenu (const juce::File& file)
+{
+    onirique::theme::OniriqueLookAndFeel look;
+    const juce::PopupMenu::Options options;
+
+    std::vector<juce::PopupMenu::Item> items;
+
+    {
+        juce::PopupMenu::Item heading ("KEY");
+        heading.isSectionHeader = true;
+        items.push_back (heading);
+    }
+
+    for (int i = 0; i < 12; ++i)
+    {
+        juce::PopupMenu::Item item (pb::noteName (i));
+        item.itemID = i + 1;
+        item.isTicked = (i == 9);
+        items.push_back (item);
+    }
+
+    const auto border = look.getPopupMenuBorderSizeWithOptions (options);
+    int width = 150, height = 2 * border;
+    std::vector<int> heights;
+
+    for (const auto& item : items)
+    {
+        int w = 0, h = 0;
+        look.getIdealPopupMenuItemSizeWithOptions (item.text, item.isSeparator, 20, w, h, options);
+        width = std::max (width, w);
+        heights.push_back (h);
+        height += h;
+    }
+
+    // Over the dark of the editor, as it will be seen.
+    juce::Image image (juce::Image::RGB, width + 40, height + 40, true);
+    // The drawing only reaches the image once its Graphics has gone.
+    {
+        juce::Graphics g (image);
+        g.fillAll (onirique::theme::night);
+        g.setOrigin (20, 20);
+        look.drawPopupMenuBackgroundWithOptions (g, width, height, options);
+
+        int y = border;
+
+        for (size_t i = 0; i < items.size(); ++i)
+        {
+            const juce::Rectangle<int> area (0, y, width, heights[i]);
+
+            if (items[i].isSectionHeader)
+                look.drawPopupMenuSectionHeaderWithOptions (g, area, items[i].text, options);
+            else
+                look.drawPopupMenuItemWithOptions (g, area, i == 4, items[i], options);
+
+            y += heights[i];
+        }
+    }
+
+    file.deleteFile();
+
+    if (auto stream = file.createOutputStream())
+        return juce::PNGImageFormat().writeImageToStream (image, *stream);
+
+    return false;
+}
+
 int main (int argc, char** argv)
 {
     if (argc < 2)
         return 2;
 
     const juce::ScopedJuceInitialiser_GUI gui;
+
+    if (juce::String (argv[1]) == "--menu")
+        return argc > 2 && writeMenu (juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[2]))) ? 0 : 1;
 
     const auto file = juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[1]));
     const auto width = argc > 3 ? juce::String (argv[2]).getIntValue() : 1160;

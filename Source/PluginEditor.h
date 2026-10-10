@@ -50,6 +50,8 @@ private:
     void updateHistoryButtons();
 
     void updatePlayhead();
+    void paintHeader (Graphics&, Rectangle<int> header);
+    int titleRight() const;
     void updateValueReadouts();
     void selectionChanged();
     void auditionNote (int index, int64_t position);
@@ -84,6 +86,10 @@ private:
     /** The sigil with its ember glow already baked in, at twice the size it is
         drawn so it stays sharp on a scaled display. */
     Image logo;
+
+    /** When the editor opened: the light that runs along the foot of the
+        header, and the stars beside the name, keep time from here. */
+    double openedAt = Time::getMillisecondCounterHiRes();
 
     String status { "Waiting for an ARA host" };
     float progress = 0.0f;
