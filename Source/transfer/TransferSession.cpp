@@ -272,7 +272,7 @@ void TransferSession::refreshAudioState() noexcept
     {
         // The old clip is not cut off: it fades out underneath the new one.
         fadingVoice = heldVoice;
-        heldVoice = { auditionClip, 0, 0.0f };
+        heldVoice = { auditionClip, 0.0, 0.0f };
     }
 
     audioEdits = edits;
@@ -389,8 +389,11 @@ void TransferSession::mixAudition (AuditionVoice& voice, AudioBuffer<float>& buf
 
     const auto& clip = *voice.clip;
     const auto clipChannels = (int) clip.channels.size();
-    const auto step = (wanted ? 1.0f : -1.0f) / (float) jmax (1.0, 0.008 * sampleRate);
+    const auto step = (wanted ? 1.0f : -1.0f) / (float) jmax (1.0, 0.012 * sampleRate);
     const auto numSamples = buffer.getNumSamples();
+    const auto length = (double) clip.length;
+
+    auto endPosition = voice.position;
 
     for (int c = 0; c < buffer.getNumChannels(); ++c)
     {
@@ -402,18 +405,25 @@ void TransferSession::mixAudition (AuditionVoice& voice, AudioBuffer<float>& buf
 
         for (int i = 0; i < numSamples; ++i)
         {
-            gain = jlimit (0.0f, 1.0f, gain + step);
-            out[i] += source[position] * gain;
+            const auto index = (int64) position;
+            const auto next = index + 1 < clip.length ? index + 1 : 0;
+            const auto fraction = (float) (position - (double) index);
 
-            if (++position >= clip.length)
-                position = 0;
+            gain = jlimit (0.0f, 1.0f, gain + step);
+            out[i] += (source[index] + fraction * (source[next] - source[index])) * gain;
+
+            position += clip.increment;
+
+            if (position >= length)
+                position -= length;
         }
+
+        endPosition = position;
     }
 
-    voice.position = (voice.position + numSamples) % clip.length;
+    voice.position = endPosition;
     voice.gain = jlimit (0.0f, 1.0f, voice.gain + step * (float) numSamples);
 }
-
 void TransferSession::renderAudition (AudioBuffer<float>& buffer) noexcept
 {
     refreshAudioState();
@@ -444,10 +454,6 @@ bool TransferSession::rebuildAuditionClip()
 
     const auto rate = currentTake->sampleRate;
 
-    // The clip is one stretch of the note with its end faded into its start.
-    // For that to be seamless the stretch has to be a whole number of pitch
-    // periods long, so its length is searched for rather than fixed: the lag
-    // at which the sound best matches itself.
     const auto fade = (int64) (0.025 * rate);
     const auto shortest = (int64) (0.070 * rate);
     const auto longest = (int64) (0.110 * rate);
@@ -456,12 +462,12 @@ bool TransferSession::rebuildAuditionClip()
     const auto noteStart = jlimit ((int64) 0, currentTake->numSamples, auditionNoteStart);
     const auto noteEnd = jlimit (noteStart, currentTake->numSamples, auditionNoteEnd);
 
-    // Around where the note was grabbed, but kept clear of its two ends when
+    // From where the note was grabbed, but kept clear of its two ends when
     // there is room: that is where the attack and the release are.
     const auto margin = jmin ((int64) (0.03 * rate), jmax ((int64) 0, (noteEnd - noteStart - needed) / 2));
     const auto from = jlimit (noteStart + margin,
                               jmax (noteStart + margin, noteEnd - margin - needed),
-                              auditionCentre - needed / 2);
+                              auditionCentre);
 
     if (from + needed > currentTake->numSamples)
         return false;
@@ -527,29 +533,135 @@ bool TransferSession::rebuildAuditionClip()
     }
 
     auto clip = std::make_shared<AuditionClip>();
-    clip->length = length;
-    clip->channels.assign (channels, std::vector<float> ((size_t) length, 0.0f));
 
-    for (size_t c = 0; c < channels; ++c)
+    // The pitch period of what was just rendered: the shortest lag at which it
+    // matches itself. Measured on the corrected audio rather than taken from
+    // the analysis, so it is the pitch that will actually be heard.
+    const auto shortestPeriod = (int64) (rate / 1200.0);
+    const auto longestPeriod = (int64) (rate / 55.0);
+    const auto window = jmin ((int64) (0.05 * rate), needed - 5 * longestPeriod - 2);
+    const auto origin = (needed - window - 5 * longestPeriod - 2) / 2;
+
+    double period = 0.0;
+
+    if (window > 2 * shortestPeriod && origin >= 0)
     {
-        for (int64 i = 0; i < length; ++i)
-        {
-            auto sample = stretch[c][(size_t) i];
+        std::vector<double> score ((size_t) (longestPeriod + 2), 0.0);
+        double energy = 0.0, strongest = 0.0;
 
-            if (i < fade)
+        for (int64 i = 0; i < window; ++i)
+            energy += (double) mono[(size_t) (origin + i)] * mono[(size_t) (origin + i)];
+
+        for (auto lag = shortestPeriod - 1; lag <= longestPeriod + 1; ++lag)
+        {
+            double cross = 0.0, lagged = 0.0;
+
+            for (int64 i = 0; i < window; ++i)
             {
-                const auto in = (float) i / (float) fade;
-                sample = sample * in + stretch[c][(size_t) (length + i)] * (1.0f - in);
+                const auto later = (double) mono[(size_t) (origin + lag + i)];
+                cross += (double) mono[(size_t) (origin + i)] * later;
+                lagged += later * later;
             }
 
-            clip->channels[c][(size_t) i] = sample;
+            score[(size_t) lag] = cross / (std::sqrt (energy * lagged) + 1.0e-12);
+            strongest = jmax (strongest, score[(size_t) lag]);
+        }
+
+        // Every multiple of the period matches as well as the period does, so
+        // it is the first good peak that is wanted, not the best one.
+        if (strongest > 0.6)
+        {
+            for (auto lag = shortestPeriod; lag <= longestPeriod; ++lag)
+            {
+                const auto here = score[(size_t) lag];
+                const auto before = score[(size_t) (lag - 1)];
+                const auto after = score[(size_t) (lag + 1)];
+
+                if (here >= strongest - 0.05 && here >= before && here >= after)
+                {
+                    // The true period falls between two samples; fitting a
+                    // parabola through the peak finds where.
+                    const auto curvature = before - 2.0 * here + after;
+                    const auto offset = std::abs (curvature) > 1.0e-12 ? 0.5 * (before - after) / curvature : 0.0;
+
+                    period = (double) lag + jlimit (-0.5, 0.5, offset);
+                    break;
+                }
+            }
         }
     }
 
+    if (period > 0.0)
+    {
+        constexpr int kTableSize = 2048;
+
+        // A few consecutive periods averaged into one: steadier than any single
+        // one of them, and free of whatever noise they do not share.
+        const auto cycles = jlimit (1, 4, (int) ((double) (needed - origin - 2) / period) - 1);
+
+        clip->length = kTableSize;
+        clip->increment = (double) kTableSize / period;
+        clip->channels.assign (channels, std::vector<float> ((size_t) kTableSize, 0.0f));
+
+        for (size_t c = 0; c < channels; ++c)
+        {
+            const auto& source = stretch[c];
+
+            auto read = [&] (double position)
+            {
+                const auto index = (size_t) position;
+                const auto fraction = (float) (position - (double) index);
+                return source[index] + fraction * (source[index + 1] - source[index]);
+            };
+
+            auto averaged = [&] (int tableIndex)
+            {
+                float sum = 0.0f;
+
+                for (int k = 0; k < cycles; ++k)
+                    sum += read ((double) origin + ((double) k + (double) tableIndex / kTableSize) * period);
+
+                return sum / (float) cycles;
+            };
+
+            // A voice never repeats exactly, so the cycle ends a little away
+            // from where it began. Taking that difference out as a slope makes
+            // the table close on itself instead of stepping once per period.
+            const auto mismatch = averaged (kTableSize) - averaged (0);
+
+            for (int i = 0; i < kTableSize; ++i)
+                clip->channels[c][(size_t) i] = averaged (i) - mismatch * (float) i / (float) kTableSize;
+        }
+    }
+    else
+    {
+        // Unvoiced: a breath or a consonant has no period to freeze. All that
+        // can be done is to go round a stretch of it, its end faded into its
+        // start, at the length where the two match best.
+        clip->length = length;
+        clip->increment = 1.0;
+        clip->channels.assign (channels, std::vector<float> ((size_t) length, 0.0f));
+
+        for (size_t c = 0; c < channels; ++c)
+        {
+            for (int64 i = 0; i < length; ++i)
+            {
+                auto sample = stretch[c][(size_t) i];
+
+                if (i < fade)
+                {
+                    const auto in = (float) i / (float) fade;
+                    sample = sample * in + stretch[c][(size_t) (length + i)] * (1.0f - in);
+                }
+
+                clip->channels[c][(size_t) i] = sample;
+            }
+        }
+    }
     // A drag that has not changed what the note sounds like gives the same
     // clip again; swapping to it would only be heard as a flutter.
     if (! auditionClips.empty() && auditionClips.back()->channels == clip->channels)
-        return false;
+        return true;
 
     auditionClips.push_back (clip);
 

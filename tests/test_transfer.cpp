@@ -293,6 +293,7 @@ int main()
             // as a jump between two samples far larger than the wave ever makes.
             float steepest = 0.0f, previous = 0.0f;
             bool first = true;
+            std::vector<float> heard;
 
             for (int i = 0; i < 40; ++i)
             {
@@ -308,8 +309,37 @@ int main()
 
                     previous = value;
                     first = false;
+                    heard.push_back (value);
                 }
             }
+
+            // Frozen means periodic: the sound matches itself exactly one
+            // period on, and that period is the note's. This one was sung 35
+            // cents under A3 with vibrato and has been corrected onto it.
+            double bestScore = 0.0;
+            int bestLag = 0;
+
+            for (int lag = 150; lag <= 300; ++lag)
+            {
+                double cross = 0.0, a = 0.0, b = 0.0;
+
+                for (size_t i = 0; i + 300 < heard.size(); ++i)
+                {
+                    cross += (double) heard[i] * heard[i + (size_t) lag];
+                    a += (double) heard[i] * heard[i];
+                    b += (double) heard[i + (size_t) lag] * heard[i + (size_t) lag];
+                }
+
+                const auto score = cross / (std::sqrt (a * b) + 1.0e-12);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestLag = lag;
+                }
+            }
+
+            const auto heardCents = 1200.0 * std::log2 ((kSr / bestLag) / 220.0);
 
             session.stopAudition();
             peakOfStoppedBlocks (4);
@@ -319,7 +349,11 @@ int main()
             check (before == 0.0f && held > 0.01f && after == 0.0f, "a held note sustains, then stops", d);
 
             std::snprintf (d, sizeof d, "steepest step %.0f%% of peak", 100.0 * steepest / held);
-            check (steepest < 0.5f * held, "and loops without a click", d);
+            check (steepest < 0.5f * held, "without a click", d);
+
+            std::snprintf (d, sizeof d, "%.1f Hz, %+.0f cents from A3, self-match %.4f",
+                           kSr / bestLag, heardCents, bestScore);
+            check (bestScore > 0.995 && std::abs (heardCents) < 45.0, "frozen at the note's pitch", d);
         }
         session.saveState (saved);
         std::snprintf (d, sizeof d, "%.0f kB for %.1fs stereo", (double) saved.getSize() / 1024.0,

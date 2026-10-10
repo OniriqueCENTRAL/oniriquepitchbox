@@ -34,17 +34,27 @@ struct TransferTake
 };
 
 //==============================================================================
-/** A short stretch of corrected audio made to be played round and round
-    without a seam: what a held note sounds like. Built off the audio thread,
-    so that all the audio thread has to do is read it. */
+/** What a held note sounds like: one cycle of the corrected voice, frozen.
+
+    A voiced note is held the way a wavetable holds a tone. One pitch period is
+    lifted out of the corrected audio, resampled into a table, and read round
+    and round at exactly the rate that gives the period back, so the pitch
+    heard is the pitch the note has. Anything longer than one period would be
+    heard for what it is, a loop.
+
+    Built off the audio thread, so that all the audio thread does is read it.
+*/
 struct AuditionClip
 {
     using Ptr = std::shared_ptr<const AuditionClip>;
 
     int64 length = 0;
+
+    /** Table samples per output sample. */
+    double increment = 1.0;
+
     std::vector<std::vector<float>> channels;
 };
-
 //==============================================================================
 /** What the plugin does in a host that has no ARA.
 
@@ -183,7 +193,7 @@ private:
     struct AuditionVoice
     {
         AuditionClip::Ptr clip;
-        int64 position = 0;
+        double position = 0.0;
         float gain = 0.0f;
     };
 
