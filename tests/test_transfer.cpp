@@ -284,6 +284,60 @@ int main()
             check (speed > 20.0, name, d);
         }
 
+        // Editing while it plays. Turning a knob changes the correction many
+        // times a second, and each change must be eased into: cutting straight
+        // from one rendering to the next puts a step in the sound every time.
+        {
+            auto steepestStep = [] (const std::vector<float>& x, size_t from, size_t to)
+            {
+                float steepest = 0.0f;
+
+                for (auto i = std::max<size_t> (from, 1); i < std::min (to, x.size()); ++i)
+                    steepest = std::max (steepest, std::abs (x[i] - x[i - 1]));
+
+                return steepest;
+            };
+
+            const auto ordinary = steepestStep (corrected[0], 0, corrected[0].size());
+
+            // Flip the correction off and on again in the middle of each of
+            // three notes, where there is the most signal to break.
+            float worst = 0.0f;
+            const auto original = session.getEdits();
+
+            for (size_t note = 1; note <= 3; ++note)
+            {
+                const auto& sung = analysis->notes[note];
+                const auto middle = (sung.startSample + sung.endSample) / 2;
+
+                for (int flip = 0; flip < 6; ++flip)
+                {
+                    const auto from = middle + flip * 700;
+
+                    auto changed = original;
+                    changed.settings.globalAmount = (flip % 2 == 0) ? 0.0f : 1.0f;
+                    changed.refreshUntouched();
+
+                    play (session, kSongStart + from - 1500, kSongStart + from, 0.0f);
+                    const auto tail = play (session, kSongStart + from - 64, kSongStart + from, 0.0f);
+
+                    session.setEdits (changed);
+
+                    auto after = play (session, kSongStart + from, kSongStart + from + 700, 0.0f);
+
+                    // Across the seam too, not only after it.
+                    after[0].insert (after[0].begin(), tail[0].back());
+                    worst = std::max (worst, steepestStep (after[0], 0, after[0].size()));
+                }
+            }
+
+            session.setEdits (original);
+            play (session, kSongStart, kSongStart + 4000, 0.0f);
+
+            std::snprintf (d, sizeof d, "steepest step %.0f%% of the signal's own", 100.0 * worst / ordinary);
+            check (worst < 1.3f * ordinary, "an edit during playback does not click", d);
+        }
+
         // Holding a note: with the transport stopped, that stretch of the take
         // is heard on top of whatever the track is doing, and only that.
         {

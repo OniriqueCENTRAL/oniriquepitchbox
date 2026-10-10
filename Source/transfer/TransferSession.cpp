@@ -204,6 +204,11 @@ void TransferSession::prepare (double newSampleRate, int maxBlockSamples, int ch
     renderer.prepare (kRenderSlice, sampleRate);
     renderSlice.setSize (jmax (2, numChannels), kRenderSlice);
     sliceLength = 0;
+
+    fadeRenderer.prepare (kRenderSlice, sampleRate);
+    fadeSlice.setSize (jmax (2, numChannels), kRenderSlice);
+    fadeLength = jmax (1, roundToInt (0.03 * sampleRate));
+    fadeRemaining = 0;
     heldVoice.gain = 0.0f;
     fadingVoice.gain = 0.0f;
 
@@ -251,11 +256,16 @@ bool TransferSession::pushToFifo (const AudioBuffer<float>& buffer) noexcept
     return true;
 }
 
-void TransferSession::refreshAudioState() noexcept
+void TransferSession::refreshAudioState (bool playing) noexcept
 {
     const auto latest = revision.load();
 
     if (latest == audioRevision)
+        return;
+
+    // One change at a time: whatever has arrived since waits for the fade
+    // into the last one to finish.
+    if (playing && fadeRemaining > 0)
         return;
 
     // Only ever try: if the message thread is in the middle of publishing, this
@@ -265,12 +275,15 @@ void TransferSession::refreshAudioState() noexcept
     if (! lock.isLocked())
         return;
 
+    const auto sameSource = audioTake == take && audioAnalysis == analysis;
+
     audioTake = take;
 
     if (audioAnalysis != analysis)
     {
         audioAnalysis = analysis;
         renderer.setAnalysis (analysis);
+        fadeRenderer.setAnalysis (analysis);
     }
 
     if (heldVoice.clip != auditionClip)
@@ -280,14 +293,34 @@ void TransferSession::refreshAudioState() noexcept
         heldVoice = { auditionClip, 0.0, 0.0f };
     }
 
-    audioEdits = edits;
+    if (edits.version != audioEdits.version)
+    {
+        if (playing && sameSource && sliceLength > 0)
+        {
+            // What was being played becomes what is faded from. Its slice is
+            // already rendered, so it changes hands rather than being redone.
+            std::swap (fadeEdits, audioEdits);
+            std::swap (fadeSlice, renderSlice);
+            fadeSliceStart = sliceStart;
+            fadeSliceLength = sliceLength;
+            fadeRemaining = fadeLength;
+        }
+        else
+        {
+            fadeRemaining = 0;
+        }
+
+        audioEdits = edits;
+        sliceLength = 0;
+    }
+    else if (! sameSource)
+    {
+        fadeRemaining = 0;
+        sliceLength = 0;
+    }
+
     audioRevision = latest;
-
-    // Whatever changed, what was rendered ahead may no longer be what should
-    // be heard.
-    sliceLength = 0;
 }
-
 void TransferSession::process (AudioBuffer<float>& buffer,
                                const Optional<AudioPlayHead::PositionInfo>& position) noexcept
 {
@@ -334,6 +367,7 @@ void TransferSession::process (AudioBuffer<float>& buffer,
 
     if (! playing || ! time.hasValue())
     {
+        fadeRemaining = 0;
         renderAudition (buffer);
         return;
     }
@@ -342,7 +376,7 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     heldVoice.gain = 0.0f;
     fadingVoice.gain = 0.0f;
 
-    refreshAudioState();
+    refreshAudioState (true);
 
     if (audioTake == nullptr || ! approximatelyEqual (audioTake->sampleRate, sampleRate))
         return;
@@ -362,18 +396,69 @@ void TransferSession::process (AudioBuffer<float>& buffer,
         if (at < sliceStart || at >= sliceStart + sliceLength)
             fillRenderSlice (at);
 
-        const auto count = (int) (std::min (last, sliceStart + sliceLength) - at);
+        auto count = (int) (std::min (last, sliceStart + sliceLength) - at);
         const auto inSlice = (int) (at - sliceStart);
         const auto inBuffer = (int) (at + audioTake->startInSong - blockRange.getStart());
 
-        // A mono take in a wider layout plays the same signal everywhere.
-        for (int c = 0; c < buffer.getNumChannels(); ++c)
-            buffer.copyFrom (c, inBuffer, renderSlice, jmin (c, sliceChannels - 1), inSlice, count);
+        if (fadeRemaining <= 0)
+        {
+            // A mono take in a wider layout plays the same signal everywhere.
+            for (int c = 0; c < buffer.getNumChannels(); ++c)
+                buffer.copyFrom (c, inBuffer, renderSlice, jmin (c, sliceChannels - 1), inSlice, count);
 
+            at += count;
+            continue;
+        }
+
+        if (at < fadeSliceStart || at >= fadeSliceStart + fadeSliceLength)
+            fillFadeSlice (at);
+
+        count = jmin (count, fadeRemaining, (int) (fadeSliceStart + fadeSliceLength - at));
+
+        const auto inFade = (int) (at - fadeSliceStart);
+        const auto perSample = 1.0f / (float) fadeLength;
+        const auto startGain = 1.0f - (float) fadeRemaining * perSample;
+
+        for (int c = 0; c < buffer.getNumChannels(); ++c)
+        {
+            const auto source = jmin (c, sliceChannels - 1);
+            const auto* incoming = renderSlice.getReadPointer (source, inSlice);
+            const auto* outgoing = fadeSlice.getReadPointer (source, inFade);
+            auto* out = buffer.getWritePointer (c, inBuffer);
+
+            for (int i = 0; i < count; ++i)
+            {
+                const auto gain = startGain + (float) i * perSample;
+                out[i] = outgoing[i] + gain * (incoming[i] - outgoing[i]);
+            }
+        }
+
+        fadeRemaining -= count;
         at += count;
     }
 }
 
+void TransferSession::fillFadeSlice (int64 from) noexcept
+{
+    fadeSliceStart = from;
+    fadeSliceLength = std::min ((int64) kRenderSlice, audioTake->numSamples - from);
+
+    const auto channels = jmin ((int) audioTake->channels.size(), fadeSlice.getNumChannels());
+
+    for (int c = 0; c < channels; ++c)
+    {
+        const auto& source = audioTake->channels[(size_t) c];
+
+        fadeRenderer.render (source.data(),
+                             -audioTake->padding,
+                             (int64) source.size(),
+                             fadeEdits,
+                             from,
+                             from + fadeSliceLength,
+                             fadeSlice.getWritePointer (c),
+                             from);
+    }
+}
 void TransferSession::fillRenderSlice (int64 from) noexcept
 {
     sliceStart = from;
@@ -439,7 +524,7 @@ void TransferSession::mixAudition (AuditionVoice& voice, AudioBuffer<float>& buf
 }
 void TransferSession::renderAudition (AudioBuffer<float>& buffer) noexcept
 {
-    refreshAudioState();
+    refreshAudioState (false);
 
     mixAudition (fadingVoice, buffer, false);
     mixAudition (heldVoice, buffer, auditionOn.load());

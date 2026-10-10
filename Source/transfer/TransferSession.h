@@ -134,7 +134,7 @@ private:
     void drainFifo();
     void finishCapture();
     bool pushToFifo (const AudioBuffer<float>&) noexcept;
-    void refreshAudioState() noexcept;
+    void refreshAudioState (bool playing) noexcept;
     void renderAudition (AudioBuffer<float>&) noexcept;
     bool rebuildAuditionClip();
     void applyEdits (pb::EditState);
@@ -203,6 +203,24 @@ private:
 
     AudioBuffer<float> renderSlice;
     int64 sliceStart = 0, sliceLength = 0;
+
+    /** An edit made during playback is eased into rather than cut to.
+
+        Two renderings of the same passage do not line up sample for sample:
+        the grains fall in different places, so going straight from one to the
+        other leaves a step in the waveform, and a knob being turned does that
+        dozens of times a second. So when the edits change, what was being
+        played goes on being rendered alongside the new version for a moment,
+        and the one is faded into the other. Newer edits wait for the fade to
+        finish, which is also what keeps a fast drag down to a rate the ear
+        hears as movement rather than as a buzz. */
+    void fillFadeSlice (int64 from) noexcept;
+
+    pb::RegionRenderer fadeRenderer;
+    pb::EditState fadeEdits;
+    AudioBuffer<float> fadeSlice;
+    int64 fadeSliceStart = 0, fadeSliceLength = 0;
+    int fadeRemaining = 0, fadeLength = 1;
 
     /** One clip being played. Two of them, so that a new clip can fade in
         while the one it replaces fades out. */
