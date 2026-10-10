@@ -51,6 +51,45 @@ std::vector<float> renderAll (const Analysis::Ptr& analysis, const std::vector<f
     return out;
 }
 
+/** Clicks per second: places where the waveform bends far more sharply than
+    anything around it does. The bend is the second difference; a spot counts
+    when it is eight times the typical bend of the surrounding 40 ms, and loud
+    enough to matter. A voice has a few of its own, on consonants. */
+double clicksPerSecond (const std::vector<float>& x, double rate)
+{
+    const auto n = (int64_t) x.size();
+    const auto half = (int64_t) (0.02 * rate);
+
+    std::vector<float> bend ((size_t) n, 0.0f);
+    double peak = 0.0;
+
+    for (int64_t i = 2; i < n; ++i)
+    {
+        bend[(size_t) i] = std::abs (x[(size_t) i] - 2.0f * x[(size_t) i - 1] + x[(size_t) i - 2]);
+        peak = std::max (peak, (double) std::abs (x[(size_t) i]));
+    }
+
+    std::vector<double> sum ((size_t) n + 1, 0.0);
+
+    for (int64_t i = 0; i < n; ++i)
+        sum[(size_t) i + 1] = sum[(size_t) i] + (double) bend[(size_t) i];
+
+    int64_t clicks = 0, lastClick = -100000;
+
+    for (int64_t i = half; i < n - half; ++i)
+    {
+        const auto typical = (sum[(size_t) (i + half)] - sum[(size_t) (i - half)]) / (double) (2 * half);
+
+        if ((double) bend[(size_t) i] > 8.0 * typical && (double) bend[(size_t) i] > 0.02 * peak
+            && i - lastClick > half)
+        {
+            ++clicks;
+            lastClick = i;
+        }
+    }
+
+    return (double) clicks / ((double) n / rate);
+}
 double worstDifference (const std::vector<float>& a, const std::vector<float>& b, int64_t from)
 {
     double worst = 0.0;
@@ -90,7 +129,7 @@ void writeWav (const juce::File& file, const std::vector<float>& x, double rate)
     smoothly, so neighbouring cycles are within a fraction of a percent of one
     another; a cycle cut short stands out as a jump. Returned as the share of
     cycles, in voiced audio, that differ from the one before by more than 4%. */
-double irregularCycles (const std::vector<float>& x, const Analysis& analysis, double shiftRatio)
+double irregularCycles (const std::vector<float>& x, const Analysis& analysis, double shiftRatio, double threshold = 0.04)
 {
     const auto rate = analysis.sampleRate;
     int64_t jumps = 0, cycles = 0;
@@ -145,7 +184,7 @@ double irregularCycles (const std::vector<float>& x, const Analysis& analysis, d
             {
                 ++cycles;
 
-                if (std::abs ((double) bestLag - previous) > 0.04 * previous)
+                if (std::abs ((double) bestLag - previous) > threshold * previous)
                     ++jumps;
             }
 
@@ -214,10 +253,13 @@ int main (int argc, char** argv)
                  analysis->marks.marks.size(), analysis->anchors.size(),
                  (double) analysis->anchors.size() / std::max (0.001, voicedSeconds));
 
+    std::printf ("  clicks per second, original          : %5.2f\n", clicksPerSecond (mono, rate));
+
     outDir.createDirectory();
     writeWav (outDir.getChildFile ("1 original.wav"), mono, rate);
 
-    std::printf ("  irregular cycles, original           : %5.2f %%\n", 100.0 * irregularCycles (mono, *analysis, 1.0));
+    std::printf ("  irregular cycles, original           : %5.2f %%   broken (off by a fifth or more): %5.3f %%\n",
+                 100.0 * irregularCycles (mono, *analysis, 1.0), 100.0 * irregularCycles (mono, *analysis, 1.0, 0.2));
 
     // Every note up a semitone: the plainest thing a pitch editor does.
     {
@@ -239,6 +281,7 @@ int main (int argc, char** argv)
         const auto took = std::chrono::duration<double> (std::chrono::steady_clock::now() - started).count();
 
         writeWav (outDir.getChildFile ("2 up a semitone.wav"), out, rate);
+        std::printf ("  clicks per second, up a semitone     : %5.2f\n", clicksPerSecond (out, rate));
 
         // The same audio whatever the host does: other block sizes, each block
         // asked for twice, and playback started part of the way through.
@@ -248,8 +291,9 @@ int main (int argc, char** argv)
                      worstDifference (out, renderAll (analysis, mono, edits, 64), 0),
                      worstDifference (out, renderAll (analysis, mono, edits, 7 * 31, 0, true), 0),
                      worstDifference (out, renderAll (analysis, mono, edits, 300, middle), middle));
-        std::printf ("  irregular cycles, up a semitone      : %5.2f %%   (rendered at %.0fx real time)\n",
+        std::printf ("  irregular cycles, up a semitone      : %5.2f %%   broken: %5.3f %%   (rendered at %.0fx real time)\n",
                      100.0 * irregularCycles (out, *analysis, std::pow (2.0, 1.0 / 12.0)),
+                     100.0 * irregularCycles (out, *analysis, std::pow (2.0, 1.0 / 12.0), 0.2),
                      ((double) n / rate) / took);
     }
 
@@ -261,8 +305,9 @@ int main (int argc, char** argv)
 
         const auto out = renderAll (analysis, mono, edits);
         writeWav (outDir.getChildFile ("3 amount at full.wav"), out, rate);
-        std::printf ("  irregular cycles, amount at full     : %5.2f %%\n",
-                     100.0 * irregularCycles (out, *analysis, 1.0));
+        std::printf ("  clicks per second, amount at full    : %5.2f\n", clicksPerSecond (out, rate));
+        std::printf ("  irregular cycles, amount at full     : %5.2f %%   broken: %5.3f %%\n",
+                     100.0 * irregularCycles (out, *analysis, 1.0), 100.0 * irregularCycles (out, *analysis, 1.0, 0.2));
     }
 
     return 0;

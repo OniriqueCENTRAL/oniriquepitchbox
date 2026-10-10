@@ -25,6 +25,14 @@ namespace
         loop or a locate is always far larger than this. */
     constexpr int64 kMaxTimeJitter = 4096;
 
+    /** During playback, a position this close to where the last block ended is
+        taken to be that position misreported. A host that works its sample
+        position out from musical time can be a few samples either side from
+        one block to the next, and following it there would repeat or drop
+        those samples each time: a tick on every block. A real locate or loop
+        moves much further than this. */
+    constexpr int64 kMaxPlaybackSlip = 256;
+
     constexpr int kChunk = 1 << 16;
 
     /** How much of the take is corrected at a time during playback. */
@@ -381,22 +389,42 @@ void TransferSession::process (AudioBuffer<float>& buffer,
 
     if (! playing || ! time.hasValue())
     {
+        wasPlaying = false;
         fadeRemaining = 0;
         renderAudition (buffer);
         return;
     }
 
+    // Keep our own count while the transport runs on, and take the host's word
+    // only when it has really moved.
+    auto songTime = (int64) *time;
+
+    if (wasPlaying && songTime != expectedPlayTime)
+    {
+        const auto slip = std::abs (songTime - expectedPlayTime);
+
+        if (slip <= kMaxPlaybackSlip)
+        {
+            positionSlips.store (positionSlips.load() + 1);
+            worstPositionSlip.store (jmax (worstPositionSlip.load(), (int) slip));
+            songTime = expectedPlayTime;
+        }
+    }
+
+    wasPlaying = true;
+    expectedPlayTime = songTime + numSamples;
+
     // Once the transport runs, the take is already sounding where it belongs.
     heldVoice.gain = 0.0f;
     fadingVoice.gain = 0.0f;
 
-    refreshAudioState (true, audioTake != nullptr ? *time - audioTake->startInSong : 0);
+    refreshAudioState (true, audioTake != nullptr ? songTime - audioTake->startInSong : 0);
 
     if (audioTake == nullptr || ! approximatelyEqual (audioTake->sampleRate, sampleRate))
         return;
 
     const auto takeRange = Range<int64>::withStartAndLength (audioTake->startInSong, audioTake->numSamples);
-    const auto blockRange = Range<int64>::withStartAndLength (*time, numSamples);
+    const auto blockRange = Range<int64>::withStartAndLength (songTime, numSamples);
     const auto range = blockRange.getIntersectionWith (takeRange);
 
     if (range.isEmpty())

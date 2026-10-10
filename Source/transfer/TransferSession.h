@@ -103,6 +103,12 @@ public:
         played back at the rate it was recorded at. */
     double getTakeSampleRate() const;
 
+    /** How many blocks arrived at a position that did not quite follow on from
+        the one before, and the furthest any was out, in samples. Zero in a host
+        that reports its position to the sample. */
+    int getPositionSlips() const noexcept           { return positionSlips.load(); }
+    int getWorstPositionSlip() const noexcept       { return worstPositionSlip.load(); }
+
     /** Song position of the first sample of the take; false when there is none. */
     bool getTakeStartInSong (int64& start) const;
     double getHostSampleRate() const noexcept       { return sampleRate; }
@@ -165,6 +171,7 @@ private:
     std::atomic<int64> recordedSamples { 0 };
 
     std::atomic<bool>  auditionOn { false };
+    std::atomic<int>   positionSlips { 0 }, worstPositionSlip { 0 };
 
     // Where the held note is, and the clips made for it so far. Clips are
     // kept until the next note is held, so that the last reference to one is
@@ -179,6 +186,10 @@ private:
     AbstractFifo fifo { 1 };
     AudioBuffer<float> fifoBuffer;
     int64 expectedTime = 0;
+
+    // Playback: where the next block should begin if the transport just runs on.
+    int64 expectedPlayTime = 0;
+    bool  wasPlaying = false;
 
     CriticalSection captureLock;
     std::vector<std::vector<float>> captured;

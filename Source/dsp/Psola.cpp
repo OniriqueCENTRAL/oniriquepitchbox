@@ -98,8 +98,9 @@ std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
     const auto maxGap = (int64_t) std::lround (kMaxAnchorGapSeconds * sampleRate);
 
     // A gap in the voicing shorter than this is a flicker of the detector in
-    // the middle of a note, not a pause, and must not be treated as one.
-    const auto minPause = (int64_t) std::lround (0.03 * sampleRate);
+    // the middle of a note, not a pause, and must not be treated as one. It is
+    // also too short to bring the cursor in across without bending the pitch.
+    const auto minPause = (int64_t) std::lround (0.05 * sampleRate);
 
     // Where the note boundaries fall no longer matters to the anchors; see the
     // header for why.
@@ -114,16 +115,16 @@ std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
     {
         auto wanted = false;
 
-        if (! m[i].voiced && m[i - 1].voiced)
+        if (m[i].voiced && ! m[i - 1].voiced)
         {
-            // The voice stops here. If it stays stopped, this is the place.
-            auto j = i;
+            // The voice comes back in here. If it had really stopped, this is
+            // the place, and the pause behind it is where the cursor lands.
+            auto j = i - 1;
 
-            while (j < m.size() && ! m[j].voiced)
-                ++j;
+            while (j > 0 && ! m[j - 1].voiced)
+                --j;
 
-            const auto resumes = j < m.size() ? m[j].position : m.back().position;
-            wanted = resumes - m[i].position >= minPause;
+            wanted = m[i].position - m[j].position >= minPause;
         }
 
         if (wanted || m[i].position - lastAnchor > maxGap)
@@ -248,6 +249,23 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
     // No grain centred further back than this can reach the block.
     const double clearOf = widest / (double) kMinRatio + 64.0;
 
+    // Where the pause leading up to an anchor begins: the first of the run of
+    // unvoiced marks just before it. An anchor with voiced sound right up to it
+    // has none, and the cursor never gets there.
+    auto landingStartFor = [&] (size_t anchorIndex) -> double
+    {
+        if (anchorIndex >= anchors.size())
+            return 1.0e300;
+
+        const auto at = marks.nearest ((double) anchors[anchorIndex]);
+        auto begins = at;
+
+        while (begins > 0 && ! marks.marks[(size_t) begins - 1].voiced)
+            --begins;
+
+        return begins < at ? (double) marks.marks[(size_t) begins].position : 1.0e300;
+    };
+
     PsolaScratch::WalkState state;
     state.s = anchors.empty() ? (double) marks.marks.front().position
                               : (double) psolaWalkStart (marks, anchors, first);
@@ -259,6 +277,8 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
     // the same grains from there on.
     while (state.nextAnchor < anchors.size() && (double) anchors[state.nextAnchor] <= state.s)
         ++state.nextAnchor;
+
+    state.landFrom = landingStartFor (state.nextAnchor);
 
     const auto remembers = r.walkKey != 0;
 
@@ -295,8 +315,48 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
         const int64_t i = marks.nearest (s);
         const auto& m = marks.marks[(size_t) i];
 
-        const double ratio = m.voiced ? ratioAt (s) : 1.0;
-        const double Ts = std::max (4.0, spacingRight (i) / ratio);
+        const auto hasAnchor = state.nextAnchor < anchors.size();
+        const auto anchor = hasAnchor ? (double) anchors[state.nextAnchor] : 0.0;
+
+        if (hasAnchor && ! state.landing && s >= state.landFrom && anchor > s)
+        {
+            // Into the pause before the anchor. Count the steps the marks
+            // would take from here to it, then settle on the whole number of
+            // steps, one fewer or the same, that needs them changed the least.
+            double p = s, lastStep = 0.0;
+            int64_t steps = 0;
+
+            while (p < anchor)
+            {
+                lastStep = std::max (4.0, spacingRight (marks.nearest (p)));
+                p += lastStep;
+                ++steps;
+            }
+
+            const auto span = anchor - s;
+            auto scale = span / (p - s);
+
+            if (steps >= 2)
+            {
+                const auto stretched = span / (p - lastStep - s);
+
+                if (stretched - 1.0 < 1.0 - scale)
+                {
+                    scale = stretched;
+                    --steps;
+                }
+            }
+
+            state.scale = scale;
+            state.stepsLeft = steps;
+            state.landing = true;
+        }
+
+        // In the pause the steps follow the marks, scaled; anywhere else they
+        // follow the pitch being asked for.
+        const double ratio = (m.voiced && ! state.landing) ? ratioAt (s) : 1.0;
+        const double Ts = state.landing ? std::max (4.0, spacingRight (i) * state.scale)
+                                        : std::max (4.0, spacingRight (i) / ratio);
 
         // Asymmetric Hann halves: each half spans the gap to its neighbour, so
         // consecutive grains sum to exactly one however irregular the marks are.
@@ -326,10 +386,22 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
 
         double next = s + Ts;
 
-        if (state.nextAnchor < anchors.size() && next >= (double) anchors[state.nextAnchor])
+        if (hasAnchor)
         {
-            next = (double) anchors[state.nextAnchor];
-            ++state.nextAnchor;
+            // Landing, the count says when. Otherwise the anchor is in the
+            // middle of the sound, and the cycle in hand is stretched to reach
+            // it or ended on it, whichever is the smaller change.
+            const auto arrives = state.landing ? (--state.stepsLeft <= 0 || next >= anchor)
+                                               : (next >= anchor || anchor - next < 0.5 * Ts);
+
+            if (arrives)
+            {
+                next = anchor;
+                ++state.nextAnchor;
+                state.landing = false;
+                state.scale = 1.0;
+                state.landFrom = landingStartFor (state.nextAnchor);
+            }
         }
 
         state.s = next;

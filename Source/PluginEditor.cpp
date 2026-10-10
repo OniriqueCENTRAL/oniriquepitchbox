@@ -597,9 +597,14 @@ void PitchBoxEditor::updateTransferStatus()
             return;
         }
 
-        showStatus (String (analysis->notes.size()) + String (CharPointer_UTF8 (" notes  \xc2\xb7  key "))
-                        + String (analysis->key.scale.describe()),
-                    {}, 1.0f);
+        auto text = String (analysis->notes.size()) + String (CharPointer_UTF8 (" notes  \xc2\xb7  key "))
+                        + String (analysis->key.scale.describe());
+
+        // Only in a host whose position wanders: how often, and how far.
+        if (const auto slips = session.getPositionSlips(); slips > 0)
+            text << String (CharPointer_UTF8 ("  \xc2\xb7  sync ")) << slips << "/" << session.getWorstPositionSlip();
+
+        showStatus (text, {}, 1.0f);
         return;
     }
 

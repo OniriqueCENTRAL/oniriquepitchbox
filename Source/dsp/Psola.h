@@ -24,16 +24,23 @@ namespace pb
     in forty, or during an offline bounce.
 
     A reset is not free, though. Once the pitch is being changed the cursor no
-    longer falls on the marks, and bringing it back onto one cuts the cycle it
-    was in the middle of short. One cut cycle is nothing; one every few
-    hundredths of a second is a flutter over the whole voice. So anchors go only
-    where the cut cannot be heard — where the voice stops, into a breath or a
-    consonant — and, failing that, as rarely as will still bound the walk:
-    kMaxAnchorGapSeconds apart inside a stretch that is voiced for longer than
-    that. Note starts are deliberately not anchors: in legato singing they come
+    longer falls on the marks, and putting it back on one means a cycle of the
+    wrong length. Cut short, that cycle is two glottal pulses almost on top of
+    one another, which is heard as a pop; and one every few hundredths of a
+    second is a flutter over the whole voice.
+
+    So an anchor sits where the voice comes back in after a pause, and the
+    cursor is not put there but brought there: across the pause leading up to
+    it, where there is no pitch to disturb, every step is lengthened or
+    shortened by the same small fraction so that the last one arrives exactly.
+    Note starts are deliberately not anchors: in legato singing they come
     several to the second, in the middle of the sound.
-*/
-constexpr double kMaxAnchorGapSeconds = 2.0;
+
+    The one case with no pause to land in is a stretch voiced for longer than
+    kMaxAnchorGapSeconds. There an anchor has to fall in the sound itself, and
+    the cursor takes whichever is nearer of stretching the cycle it is in or
+    ending it early, so that it is never off by more than half.
+*/constexpr double kMaxAnchorGapSeconds = 2.0;
 std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
                                         const std::vector<int64_t>& noteStarts,
                                         double sampleRate);
@@ -82,6 +89,14 @@ struct PsolaScratch
     {
         double s = 0.0;
         size_t nextAnchor = 0;
+
+        // The approach to that anchor: where the pause before it begins, and
+        // once the cursor is in it, the factor on every step and how many are
+        // left before it arrives.
+        double  landFrom  = 0.0;
+        double  scale     = 1.0;
+        int64_t stepsLeft = 0;
+        bool    landing   = false;
     };
 
     struct WalkMemo
