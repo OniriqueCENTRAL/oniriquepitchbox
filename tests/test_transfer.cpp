@@ -282,16 +282,45 @@ int main()
             };
 
             const auto before = peakOfStoppedBlocks (4);
-            session.startAudition (note.startSample, note.endSample);
-            const auto during = peakOfStoppedBlocks (200);   // long enough to go round
+            session.startAudition (note.startSample, note.endSample, (note.startSample + note.endSample) / 2);
+            peakOfStoppedBlocks (400);
+
+            // Four seconds in, long after the note itself is over: it is held,
+            // not played through.
+            const auto held = peakOfStoppedBlocks (20);
+
+            // And held without a seam. A splice that did not line up would show
+            // as a jump between two samples far larger than the wave ever makes.
+            float steepest = 0.0f, previous = 0.0f;
+            bool first = true;
+
+            for (int i = 0; i < 40; ++i)
+            {
+                block.clear();
+                session.process (block, positionAt (kSongStart, false));
+
+                for (int s = 0; s < kMaxBlock; ++s)
+                {
+                    const auto value = block.getSample (0, s);
+
+                    if (! first)
+                        steepest = std::max (steepest, std::abs (value - previous));
+
+                    previous = value;
+                    first = false;
+                }
+            }
+
             session.stopAudition();
             peakOfStoppedBlocks (4);
             const auto after = peakOfStoppedBlocks (4);
 
-            std::snprintf (d, sizeof d, "peak %.2g before, %.2g held, %.2g released", before, during, after);
-            check (before == 0.0f && during > 0.01f && after == 0.0f, "a held note is heard, then stops", d);
-        }
+            std::snprintf (d, sizeof d, "peak %.2g before, %.2g held, %.2g released", before, held, after);
+            check (before == 0.0f && held > 0.01f && after == 0.0f, "a held note sustains, then stops", d);
 
+            std::snprintf (d, sizeof d, "steepest step %.0f%% of peak", 100.0 * steepest / held);
+            check (steepest < 0.5f * held, "and loops without a click", d);
+        }
         session.saveState (saved);
         std::snprintf (d, sizeof d, "%.0f kB for %.1fs stereo", (double) saved.getSize() / 1024.0,
                        (double) n / kSr);

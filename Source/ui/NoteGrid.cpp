@@ -10,6 +10,13 @@ namespace
     constexpr float kRulerWidth = 46.0f;
     constexpr float kMinSemitonesVisible = 6.0f;
     constexpr float kMaxSemitonesVisible = 60.0f;
+
+    // The whole keyboard, C-1 to C9: as far as the view can be scrolled.
+    constexpr float kLowestCents = 0.0f;
+    constexpr float kHighestCents = 12000.0f;
+
+    /** Fraction of the view one notch of the wheel moves it by. */
+    constexpr float kScrollPerNotch = 0.35f;
 }
 
 NoteGrid::NoteGrid()
@@ -461,7 +468,7 @@ void NoteGrid::mouseDown (const MouseEvent& e)
     }
 
     if (onAudition)
-        onAudition (hit);
+        onAudition (hit, xToTime (e.position.x));
 
     repaint();
 }
@@ -546,7 +553,7 @@ void NoteGrid::mouseDrag (const MouseEvent& e)
 void NoteGrid::mouseUp (const MouseEvent&)
 {
     if (draggingNote >= 0 && onAudition)
-        onAudition (-1);
+        onAudition (-1, 0);
 
     draggingNote = -1;
     lassoing = false;
@@ -589,28 +596,47 @@ void NoteGrid::mouseDoubleClick (const MouseEvent& e)
 
 void NoteGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& wheel)
 {
-    if (analysis == nullptr)
-        return;
+    // Some systems turn Shift + wheel into a sideways wheel and some do not,
+    // so the modified gestures take whichever axis actually moved.
+    const auto amount = std::abs (wheel.deltaY) >= std::abs (wheel.deltaX) ? wheel.deltaY : wheel.deltaX;
+    const auto span = viewHighCents - viewLowCents;
 
-    if (e.mods.isShiftDown() || e.mods.isCtrlDown() || e.mods.isCommandDown())
+    auto scrollTime = [this] (float notches)
+    {
+        if (analysis == nullptr)
+            return;
+
+        const auto shift = (int64_t) (-notches * kScrollPerNotch * (float) viewLength);
+        viewStart = jlimit ((int64_t) 0, jmax ((int64_t) 0, analysis->numSamples - viewLength),
+                            viewStart + shift);
+    };
+
+    auto setPitchView = [this] (float low, float newSpan)
+    {
+        viewLowCents  = jlimit (kLowestCents, jmax (kLowestCents, kHighestCents - newSpan), low);
+        viewHighCents = viewLowCents + newSpan;
+    };
+
+    if (e.mods.isAltDown())
     {
         // Vertical zoom about the pointer.
         const auto anchor = yToCents (e.position.y);
-        const auto span = viewHighCents - viewLowCents;
-        const auto factor = std::pow (1.2f, -wheel.deltaY * 3.0f);
+        const auto factor = std::pow (1.2f, -amount * 3.0f);
         const auto newSpan = jlimit (kMinSemitonesVisible * 100.0f,
                                      kMaxSemitonesVisible * 100.0f, span * factor);
         const auto frac = (anchor - viewLowCents) / jmax (1.0f, span);
 
-        viewLowCents  = anchor - newSpan * frac;
-        viewHighCents = viewLowCents + newSpan;
+        setPitchView (anchor - newSpan * frac, newSpan);
     }
-    else if (e.mods.isAltDown())
+    else if (e.mods.isCtrlDown() || e.mods.isCommandDown())
     {
+        if (analysis == nullptr)
+            return;
+
         // Horizontal zoom about the pointer.
         const auto anchor = xToTime (e.position.x);
-        const auto factor = std::pow (1.2, -wheel.deltaY * 3.0);
-        const auto newLength = (int64_t) jlimit (1024.0, (double) analysis->numSamples,
+        const auto factor = std::pow (1.2, -amount * 3.0);
+        const auto newLength = (int64_t) jlimit (1024.0, (double) jmax ((int64_t) 1024, analysis->numSamples),
                                                  (double) viewLength * factor);
         const auto frac = (double) (anchor - viewStart) / (double) jmax ((int64_t) 1, viewLength);
 
@@ -618,16 +644,20 @@ void NoteGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& whe
                             anchor - (int64_t) (frac * (double) newLength));
         viewLength = newLength;
     }
+    else if (e.mods.isShiftDown())
+    {
+        scrollTime (amount);
+    }
     else
     {
-        const auto shift = (int64_t) (-wheel.deltaX * 2.0f * (float) viewLength * 0.25f);
-        viewStart = jlimit ((int64_t) 0, jmax ((int64_t) 0, analysis->numSamples - viewLength),
-                            viewStart + shift);
+        // The plain wheel walks up and down the keyboard; a trackpad's
+        // sideways movement goes along the take.
+        setPitchView (viewLowCents + wheel.deltaY * kScrollPerNotch * span, span);
+        scrollTime (wheel.deltaX);
     }
 
     repaint();
 }
-
 void NoteGrid::resized()
 {
     repaint();

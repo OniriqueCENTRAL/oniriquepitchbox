@@ -33,8 +33,9 @@ public:
         take the snapshot that undo will come back to. */
     std::function<void()> onBeginEdit;
 
-    /** The note the user is holding down, or -1 on release. */
-    std::function<void (int)> onAudition;
+    /** The note the user is holding down and where in the take they hold it,
+        or -1 on release. */
+    std::function<void (int, int64_t)> onAudition;
 
     std::function<void()> onSelectionChanged;
 

@@ -34,6 +34,18 @@ struct TransferTake
 };
 
 //==============================================================================
+/** A short stretch of corrected audio made to be played round and round
+    without a seam: what a held note sounds like. Built off the audio thread,
+    so that all the audio thread has to do is read it. */
+struct AuditionClip
+{
+    using Ptr = std::shared_ptr<const AuditionClip>;
+
+    int64 length = 0;
+    std::vector<std::vector<float>> channels;
+};
+
+//==============================================================================
 /** What the plugin does in a host that has no ARA.
 
     ARA is how a host hands over a whole take up front. Without it the plugin
@@ -84,13 +96,12 @@ public:
 
     pb::Analysis::Ptr getAnalysis() const;
 
-    /** Plays one stretch of the take, corrected, round and round while the
-        transport is stopped: what the user hears while holding a note. It
-        follows the edits like everything else, so a note being dragged is
-        heard moving. */
-    void startAudition (int64 firstSample, int64 lastSample);
+    /** Holds a note: sustains the corrected sound of the take around `centre`,
+        inside [noteStart, noteEnd), for as long as it is wanted and while the
+        transport is stopped. It follows the edits like everything else, so a
+        note being dragged is heard moving. */
+    void startAudition (int64 noteStart, int64 noteEnd, int64 centre);
     void stopAudition();
-
     pb::EditState getEdits() const;
     uint64_t getEditVersion() const;
     void setEdits (pb::EditState);
@@ -112,6 +123,8 @@ private:
     bool pushToFifo (const AudioBuffer<float>&) noexcept;
     void refreshAudioState() noexcept;
     void renderAudition (AudioBuffer<float>&) noexcept;
+    bool rebuildAuditionClip();
+    void applyEdits (pb::EditState);
 
     /** Replaces the take and starts analysing the new one. */
     void install (TransferTake::Ptr newTake,
@@ -126,6 +139,7 @@ private:
     TransferTake::Ptr take, retiredTake;
     pb::Analysis::Ptr analysis, retiredAnalysis;
     pb::EditState edits;
+    AuditionClip::Ptr auditionClip;
     uint64_t editCounter = 1;
     std::atomic<uint64_t> revision { 1 };
 
@@ -137,8 +151,15 @@ private:
     std::atomic<int64> recordedSamples { 0 };
 
     std::atomic<bool>  auditionOn { false };
-    std::atomic<int>   auditionSerial { 0 };
-    std::atomic<int64> auditionFirst { 0 }, auditionLast { 0 };
+
+    // Where the held note is, and the clips made for it so far. Clips are
+    // kept until the next note is held, so that the last reference to one is
+    // never dropped on the audio thread.
+    CriticalSection auditionLock;
+    pb::RegionRenderer auditionRenderer;
+    pb::Analysis::Ptr auditionRendererAnalysis;
+    int64 auditionNoteStart = 0, auditionNoteEnd = 0, auditionCentre = 0;
+    std::vector<AuditionClip::Ptr> auditionClips, olderAuditionClips;
 
     // Capture: the audio thread writes the fifo, the timer empties it.
     AbstractFifo fifo { 1 };
@@ -157,10 +178,18 @@ private:
     pb::EditState audioEdits;
     uint64_t audioRevision = 0;
 
-    std::vector<float> auditionScratch;
-    int64 auditionPosition = 0;
-    int   auditionSeenSerial = 0;
-    float auditionGain = 0.0f;
+    /** One clip being played. Two of them, so that a new clip can fade in
+        while the one it replaces fades out. */
+    struct AuditionVoice
+    {
+        AuditionClip::Ptr clip;
+        int64 position = 0;
+        float gain = 0.0f;
+    };
+
+    void mixAudition (AuditionVoice&, AudioBuffer<float>&, bool wanted) noexcept;
+
+    AuditionVoice heldVoice, fadingVoice;
 
     double sampleRate = 0.0;
     int maxBlock = 512;

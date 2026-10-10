@@ -199,8 +199,8 @@ void TransferSession::prepare (double newSampleRate, int maxBlockSamples, int ch
     numChannels = channels;
 
     renderer.prepare (maxBlock, sampleRate);
-    auditionScratch.assign ((size_t) maxBlock, 0.0f);
-    auditionGain = 0.0f;
+    heldVoice.gain = 0.0f;
+    fadingVoice.gain = 0.0f;
 
     // Hosts call this freely, some of them on every transport start, so an
     // armed or running transfer must survive it whenever nothing that matters
@@ -268,6 +268,13 @@ void TransferSession::refreshAudioState() noexcept
         renderer.setAnalysis (analysis);
     }
 
+    if (heldVoice.clip != auditionClip)
+    {
+        // The old clip is not cut off: it fades out underneath the new one.
+        fadingVoice = heldVoice;
+        heldVoice = { auditionClip, 0, 0.0f };
+    }
+
     audioEdits = edits;
     audioRevision = latest;
 }
@@ -323,8 +330,8 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     }
 
     // Once the transport runs, the take is already sounding where it belongs.
-    auditionGain = 0.0f;
-    auditionSeenSerial = auditionSerial.load();
+    heldVoice.gain = 0.0f;
+    fadingVoice.gain = 0.0f;
 
     refreshAudioState();
 
@@ -375,99 +382,206 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     }
 }
 
-void TransferSession::renderAudition (AudioBuffer<float>& buffer) noexcept
+void TransferSession::mixAudition (AuditionVoice& voice, AudioBuffer<float>& buffer, bool wanted) noexcept
 {
-    const auto wanted = auditionOn.load();
-    const auto serial = auditionSerial.load();
-
-    if (! wanted && auditionGain <= 0.0f)
-    {
-        auditionSeenSerial = serial;
+    if (voice.clip == nullptr || voice.clip->length <= 0 || (! wanted && voice.gain <= 0.0f))
         return;
-    }
 
-    refreshAudioState();
-
-    if (audioTake == nullptr || ! approximatelyEqual (audioTake->sampleRate, sampleRate))
-    {
-        auditionGain = 0.0f;
-        return;
-    }
-
-    const auto first = jlimit ((int64) 0, audioTake->numSamples, auditionFirst.load());
-    const auto last = jlimit (first, audioTake->numSamples, auditionLast.load());
-
-    // Short fades at both ends of the stretch, so going round does not click,
-    // and a ramp on the whole thing for the press and the release.
-    const auto edge = (int64) jmax (1.0, 0.01 * sampleRate);
-    const auto step = 1.0f / (float) jmax (1.0, 0.008 * sampleRate);
-
-    if (last - first < 4 * edge)
-    {
-        auditionGain = 0.0f;
-        return;
-    }
-
-    if (serial != auditionSeenSerial)
-    {
-        auditionSeenSerial = serial;
-        auditionPosition = first;
-        auditionGain = 0.0f;
-    }
-
+    const auto& clip = *voice.clip;
+    const auto clipChannels = (int) clip.channels.size();
+    const auto step = (wanted ? 1.0f : -1.0f) / (float) jmax (1.0, 0.008 * sampleRate);
     const auto numSamples = buffer.getNumSamples();
-    const auto takeChannels = (int) audioTake->channels.size();
-    const auto direction = wanted ? step : -step;
 
-    for (int done = 0; done < numSamples;)
+    for (int c = 0; c < buffer.getNumChannels(); ++c)
     {
-        if (auditionPosition < first || auditionPosition >= last)
-            auditionPosition = first;
+        const auto* source = clip.channels[(size_t) jmin (c, clipChannels - 1)].data();
+        auto* out = buffer.getWritePointer (c);
 
-        const auto count = (int) std::min ((int64) jmin (maxBlock, numSamples - done),
-                                           last - auditionPosition);
+        auto position = voice.position;
+        auto gain = voice.gain;
 
-        for (int c = 0; c < buffer.getNumChannels(); ++c)
+        for (int i = 0; i < numSamples; ++i)
         {
-            const auto& source = audioTake->channels[(size_t) jmin (c, takeChannels - 1)];
+            gain = jlimit (0.0f, 1.0f, gain + step);
+            out[i] += source[position] * gain;
 
-            renderer.render (source.data(),
-                             -audioTake->padding,
-                             (int64) source.size(),
-                             audioEdits,
-                             auditionPosition,
-                             auditionPosition + count,
-                             auditionScratch.data(),
-                             auditionPosition);
-
-            auto* out = buffer.getWritePointer (c) + done;
-            auto gain = auditionGain;
-
-            for (int i = 0; i < count; ++i)
-            {
-                const auto position = auditionPosition + i;
-                const auto fromEdge = std::min (position - first, last - 1 - position);
-                const auto window = jmin (1.0f, (float) fromEdge / (float) edge);
-
-                gain = jlimit (0.0f, 1.0f, gain + direction);
-                out[i] += auditionScratch[(size_t) i] * gain * window;
-            }
+            if (++position >= clip.length)
+                position = 0;
         }
-
-        auditionGain = jlimit (0.0f, 1.0f, auditionGain + direction * (float) count);
-        auditionPosition += count;
-        done += count;
-
-        if (! wanted && auditionGain <= 0.0f)
-            break;
     }
+
+    voice.position = (voice.position + numSamples) % clip.length;
+    voice.gain = jlimit (0.0f, 1.0f, voice.gain + step * (float) numSamples);
 }
 
-void TransferSession::startAudition (int64 firstSample, int64 lastSample)
+void TransferSession::renderAudition (AudioBuffer<float>& buffer) noexcept
 {
-    auditionFirst.store (firstSample);
-    auditionLast.store (lastSample);
-    ++auditionSerial;
+    refreshAudioState();
+
+    mixAudition (fadingVoice, buffer, false);
+    mixAudition (heldVoice, buffer, auditionOn.load());
+}
+
+//==============================================================================
+bool TransferSession::rebuildAuditionClip()
+{
+    const ScopedLock auditionScope (auditionLock);
+
+    TransferTake::Ptr currentTake;
+    pb::Analysis::Ptr currentAnalysis;
+    pb::EditState currentEdits;
+
+    {
+        const SpinLock::ScopedLockType lock (sharedLock);
+        currentTake = take;
+        currentAnalysis = analysis;
+        currentEdits = edits;
+    }
+
+    if (currentTake == nullptr || currentAnalysis == nullptr
+        || ! approximatelyEqual (currentTake->sampleRate, sampleRate))
+        return false;
+
+    const auto rate = currentTake->sampleRate;
+
+    // The clip is one stretch of the note with its end faded into its start.
+    // For that to be seamless the stretch has to be a whole number of pitch
+    // periods long, so its length is searched for rather than fixed: the lag
+    // at which the sound best matches itself.
+    const auto fade = (int64) (0.025 * rate);
+    const auto shortest = (int64) (0.070 * rate);
+    const auto longest = (int64) (0.110 * rate);
+    const auto needed = longest + fade;
+
+    const auto noteStart = jlimit ((int64) 0, currentTake->numSamples, auditionNoteStart);
+    const auto noteEnd = jlimit (noteStart, currentTake->numSamples, auditionNoteEnd);
+
+    // Around where the note was grabbed, but kept clear of its two ends when
+    // there is room: that is where the attack and the release are.
+    const auto margin = jmin ((int64) (0.03 * rate), jmax ((int64) 0, (noteEnd - noteStart - needed) / 2));
+    const auto from = jlimit (noteStart + margin,
+                              jmax (noteStart + margin, noteEnd - margin - needed),
+                              auditionCentre - needed / 2);
+
+    if (from + needed > currentTake->numSamples)
+        return false;
+
+    constexpr int kBlock = 512;
+
+    if (auditionRendererAnalysis != currentAnalysis)
+    {
+        auditionRenderer.prepare (kBlock, rate);
+        auditionRenderer.setAnalysis (currentAnalysis);
+        auditionRendererAnalysis = currentAnalysis;
+    }
+
+    const auto channels = currentTake->channels.size();
+    std::vector<std::vector<float>> stretch (channels, std::vector<float> ((size_t) needed, 0.0f));
+
+    for (size_t c = 0; c < channels; ++c)
+    {
+        const auto& source = currentTake->channels[c];
+
+        for (int64 pos = 0; pos < needed; pos += kBlock)
+        {
+            const auto count = std::min ((int64) kBlock, needed - pos);
+
+            auditionRenderer.render (source.data(), -currentTake->padding, (int64) source.size(),
+                                     currentEdits, from + pos, from + pos + count,
+                                     stretch[c].data() + pos, from + pos);
+        }
+    }
+
+    std::vector<float> mono ((size_t) needed, 0.0f);
+
+    for (const auto& channel : stretch)
+        for (size_t i = 0; i < mono.size(); ++i)
+            mono[i] += channel[i];
+
+    double headEnergy = 0.0;
+
+    for (int64 i = 0; i < fade; ++i)
+        headEnergy += (double) mono[(size_t) i] * mono[(size_t) i];
+
+    auto length = shortest;
+    double best = -2.0;
+
+    for (auto lag = shortest; lag <= longest; ++lag)
+    {
+        double cross = 0.0, tailEnergy = 0.0;
+
+        for (int64 i = 0; i < fade; ++i)
+        {
+            const auto tail = (double) mono[(size_t) (lag + i)];
+            cross += (double) mono[(size_t) i] * tail;
+            tailEnergy += tail * tail;
+        }
+
+        const auto score = cross / (std::sqrt (headEnergy * tailEnergy) + 1.0e-12);
+
+        if (score > best)
+        {
+            best = score;
+            length = lag;
+        }
+    }
+
+    auto clip = std::make_shared<AuditionClip>();
+    clip->length = length;
+    clip->channels.assign (channels, std::vector<float> ((size_t) length, 0.0f));
+
+    for (size_t c = 0; c < channels; ++c)
+    {
+        for (int64 i = 0; i < length; ++i)
+        {
+            auto sample = stretch[c][(size_t) i];
+
+            if (i < fade)
+            {
+                const auto in = (float) i / (float) fade;
+                sample = sample * in + stretch[c][(size_t) (length + i)] * (1.0f - in);
+            }
+
+            clip->channels[c][(size_t) i] = sample;
+        }
+    }
+
+    // A drag that has not changed what the note sounds like gives the same
+    // clip again; swapping to it would only be heard as a flutter.
+    if (! auditionClips.empty() && auditionClips.back()->channels == clip->channels)
+        return false;
+
+    auditionClips.push_back (clip);
+
+    const SpinLock::ScopedLockType lock (sharedLock);
+    auditionClip = std::move (clip);
+    ++revision;
+    return true;
+}
+
+void TransferSession::startAudition (int64 noteStart, int64 noteEnd, int64 centre)
+{
+    {
+        const ScopedLock auditionScope (auditionLock);
+
+        auditionNoteStart = noteStart;
+        auditionNoteEnd = noteEnd;
+        auditionCentre = centre;
+
+        // By now the audio thread has long let go of the clips before last.
+        olderAuditionClips = std::move (auditionClips);
+        auditionClips.clear();
+    }
+
+    if (! rebuildAuditionClip())
+    {
+        // Nothing to play for this note: make sure the last one is not heard
+        // in its place.
+        const SpinLock::ScopedLockType lock (sharedLock);
+        auditionClip = nullptr;
+        ++revision;
+    }
+
     auditionOn.store (true);
 }
 
@@ -475,7 +589,6 @@ void TransferSession::stopAudition()
 {
     auditionOn.store (false);
 }
-
 //==============================================================================
 void TransferSession::resetCapture()
 {
@@ -745,7 +858,7 @@ uint64_t TransferSession::getEditVersion() const
     return edits.version;
 }
 
-void TransferSession::setEdits (pb::EditState newEdits)
+void TransferSession::applyEdits (pb::EditState newEdits)
 {
     const SpinLock::ScopedLockType lock (sharedLock);
 
@@ -760,6 +873,15 @@ void TransferSession::setEdits (pb::EditState newEdits)
     // curve cache on the version, so no two different states may share one.
     edits.version = ++editCounter;
     ++revision;
+}
+
+void TransferSession::setEdits (pb::EditState newEdits)
+{
+    applyEdits (std::move (newEdits));
+
+    // A note being held while it is edited has to be heard changing.
+    if (auditionOn.load())
+        rebuildAuditionClip();
 }
 
 //==============================================================================

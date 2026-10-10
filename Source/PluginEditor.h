@@ -50,7 +50,7 @@ private:
     void updateHistoryButtons();
 
     void selectionChanged();
-    void auditionNote (int index);
+    void auditionNote (int index, int64_t position);
 
     void syncControls();
     void showStatus (const String& headerText, const String& gridText, float gridProgress);

@@ -190,7 +190,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
 
     grid.onBeginEdit = [this] { beginEdit(); };
     grid.onSelectionChanged = [this] { selectionChanged(); };
-    grid.onAudition = [this] (int index) { auditionNote (index); };
+    grid.onAudition = [this] (int index, int64_t position) { auditionNote (index, position); };
 
     updateHistoryButtons();
     selectionChanged();
@@ -432,7 +432,7 @@ void PitchBoxEditor::selectionChanged()
     modulationSlider.setValue (shown, dontSendNotification);
 }
 
-void PitchBoxEditor::auditionNote (int index)
+void PitchBoxEditor::auditionNote (int index, int64_t position)
 {
     // Only in transfer mode: that is where the plugin holds the audio itself.
     if (! transferMode)
@@ -447,7 +447,7 @@ void PitchBoxEditor::auditionNote (int index)
     }
 
     const auto& n = edits.notes[(size_t) index];
-    session.startAudition (n.startSample, n.endSample);
+    session.startAudition (n.startSample, n.endSample, position);
 }
 
 pb::Analysis::Ptr PitchBoxEditor::currentAnalysis() const
