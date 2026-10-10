@@ -746,7 +746,9 @@ void NoteGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& whe
         viewHighCents = viewLowCents + newSpan;
     };
 
-    if (e.mods.isAltDown())
+    const auto zooming = e.mods.isCtrlDown() || e.mods.isCommandDown();
+
+    if (e.mods.isAltDown() || (zooming && e.mods.isShiftDown()))
     {
         // Vertical zoom about the pointer.
         const auto anchor = yToCents (e.position.y);
@@ -757,7 +759,7 @@ void NoteGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& whe
 
         setPitchView (anchor - newSpan * frac, newSpan);
     }
-    else if (e.mods.isCtrlDown() || e.mods.isCommandDown())
+    else if (zooming)
     {
         if (analysis == nullptr)
             return;

@@ -220,8 +220,9 @@ complet hors ligne. Les deux qui comptent le plus :
 - **UNDO / REDO / RESET** : RESET efface les éditions faites à la main et garde
   les réglages globaux ; il s'annule comme le reste.
 - **Molette** : monter et descendre sur tout le clavier. `Maj` + molette :
-  avancer et reculer dans la prise. `Ctrl` + molette : zoom horizontal.
-  `Alt` + molette : zoom vertical.
+  avancer et reculer dans la prise. `Ctrl` + molette : zoom dans le temps.
+  `Ctrl` + `Maj` + molette (ou `Alt` + molette) : zoom en hauteur. Les deux
+  zooms se font sur le curseur.
 - **Barres de défilement** en bas et à droite, et **glisser au clic droit ou
   molette** pour déplacer la vue dans les deux sens.
 - **AMOUNT** : force de la correction sur les notes non touchées à la main.
