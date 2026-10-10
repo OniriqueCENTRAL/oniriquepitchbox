@@ -402,7 +402,7 @@ void NoteGrid::drawNotes (Graphics& g)
 
         const auto touched = i < edits->touched.size() && edits->touched[i];
         const auto picked = isSelected (i);
-        const auto hovered = picked || (int) i == hoveredNote || (int) i == draggingNote;
+        const auto hovered = (int) i == hoveredNote || (int) i == draggingNote;
 
         if (n.bypassed)
         {
@@ -419,12 +419,22 @@ void NoteGrid::drawNotes (Graphics& g)
                                                blob.getX(), blob.getBottom(), false));
             g.fillRoundedRectangle (blob, 3.0f);
 
-            g.setColour (touched ? bone : ember.withAlpha (0.85f));
-            g.drawRoundedRectangle (blob, 3.0f, touched ? 1.6f : 1.0f);
+            // A note edited by hand is marked, but quietly: a white edge is
+            // what says "selected", and nothing else may look like it.
+            g.setColour (touched ? emberLit : ember.withAlpha (0.85f));
+            g.drawRoundedRectangle (blob, 3.0f, touched ? 1.4f : 1.0f);
+
+            if (touched)
+            {
+                g.setColour (bone.withAlpha (0.9f));
+                g.fillEllipse (Rectangle<float> (4.0f, 4.0f).withCentre ({ blob.getRight() - 6.0f, blob.getY() + 6.0f }));
+            }
         }
 
         if (picked)
         {
+            g.setColour (Colours::white.withAlpha (0.16f));
+            g.fillRoundedRectangle (blob, 3.0f);
             g.setColour (Colours::white);
             g.drawRoundedRectangle (blob.expanded (2.0f), 4.5f, 1.6f);
         }
