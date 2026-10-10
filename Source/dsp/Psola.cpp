@@ -97,11 +97,6 @@ std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
     // depends on the host's buffer size or on where the user started playback.
     const auto maxGap = (int64_t) std::lround (kMaxAnchorGapSeconds * sampleRate);
 
-    // A gap in the voicing shorter than this is a flicker of the detector in
-    // the middle of a note, not a pause, and must not be treated as one. It is
-    // also too short to bring the cursor in across without bending the pitch.
-    const auto minPause = (int64_t) std::lround (0.05 * sampleRate);
-
     // Where the note boundaries fall no longer matters to the anchors; see the
     // header for why.
     (void) noteStarts;
@@ -110,24 +105,17 @@ std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
 
     anchors.push_back (m.front().position);
     auto lastAnchor = m.front().position;
+    size_t pause = 0;
 
     for (size_t i = 1; i < m.size(); ++i)
     {
-        auto wanted = false;
+        while (pause < marks.pauses.size() && marks.pauses[pause].end < m[i].position)
+            ++pause;
 
-        if (m[i].voiced && ! m[i - 1].voiced)
-        {
-            // The voice comes back in here. If it had really stopped, this is
-            // the place, and the pause behind it is where the cursor lands.
-            auto j = i - 1;
+        // The voice comes back in here, after a real pause.
+        const auto resumes = pause < marks.pauses.size() && marks.pauses[pause].end == m[i].position;
 
-            while (j > 0 && ! m[j - 1].voiced)
-                --j;
-
-            wanted = m[i].position - m[j].position >= minPause;
-        }
-
-        if (wanted || m[i].position - lastAnchor > maxGap)
+        if (resumes || m[i].position - lastAnchor > maxGap)
         {
             anchors.push_back (m[i].position);
             lastAnchor = m[i].position;
@@ -249,23 +237,6 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
     // No grain centred further back than this can reach the block.
     const double clearOf = widest / (double) kMinRatio + 64.0;
 
-    // Where the pause leading up to an anchor begins: the first of the run of
-    // unvoiced marks just before it. An anchor with voiced sound right up to it
-    // has none, and the cursor never gets there.
-    auto landingStartFor = [&] (size_t anchorIndex) -> double
-    {
-        if (anchorIndex >= anchors.size())
-            return 1.0e300;
-
-        const auto at = marks.nearest ((double) anchors[anchorIndex]);
-        auto begins = at;
-
-        while (begins > 0 && ! marks.marks[(size_t) begins - 1].voiced)
-            --begins;
-
-        return begins < at ? (double) marks.marks[(size_t) begins].position : 1.0e300;
-    };
-
     PsolaScratch::WalkState state;
     state.s = anchors.empty() ? (double) marks.marks.front().position
                               : (double) psolaWalkStart (marks, anchors, first);
@@ -278,7 +249,6 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
     while (state.nextAnchor < anchors.size() && (double) anchors[state.nextAnchor] <= state.s)
         ++state.nextAnchor;
 
-    state.landFrom = landingStartFor (state.nextAnchor);
 
     const auto remembers = r.walkKey != 0;
 
@@ -318,46 +288,8 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
         const auto hasAnchor = state.nextAnchor < anchors.size();
         const auto anchor = hasAnchor ? (double) anchors[state.nextAnchor] : 0.0;
 
-        if (hasAnchor && ! state.landing && s >= state.landFrom && anchor > s)
-        {
-            // Into the pause before the anchor. Count the steps the marks
-            // would take from here to it, then settle on the whole number of
-            // steps, one fewer or the same, that needs them changed the least.
-            double p = s, lastStep = 0.0;
-            int64_t steps = 0;
-
-            while (p < anchor)
-            {
-                lastStep = std::max (4.0, spacingRight (marks.nearest (p)));
-                p += lastStep;
-                ++steps;
-            }
-
-            const auto span = anchor - s;
-            auto scale = span / (p - s);
-
-            if (steps >= 2)
-            {
-                const auto stretched = span / (p - lastStep - s);
-
-                if (stretched - 1.0 < 1.0 - scale)
-                {
-                    scale = stretched;
-                    --steps;
-                }
-            }
-
-            state.scale = scale;
-            state.stepsLeft = steps;
-            state.landing = true;
-        }
-
-        // In the pause the steps follow the marks, scaled; anywhere else they
-        // follow the pitch being asked for.
-        const double ratio = (m.voiced && ! state.landing) ? ratioAt (s) : 1.0;
-        const double Ts = state.landing ? std::max (4.0, spacingRight (i) * state.scale)
-                                        : std::max (4.0, spacingRight (i) / ratio);
-
+        const double ratio = m.voiced ? ratioAt (s) : 1.0;
+        const double Ts = std::max (4.0, spacingRight (i) / ratio);
         // Asymmetric Hann halves: each half spans the gap to its neighbour, so
         // consecutive grains sum to exactly one however irregular the marks are.
         // When pitching down the grains must stretch to keep the overlap closed.
@@ -386,24 +318,15 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
 
         double next = s + Ts;
 
-        if (hasAnchor)
+        // An anchor after a pause is reached inside the pause, where nothing
+        // the cursor lays down is heard. One in the middle of the sound is
+        // not, so there the cycle in hand is stretched to reach it or ended on
+        // it, whichever is the smaller change.
+        if (hasAnchor && (next >= anchor || anchor - next < 0.5 * Ts))
         {
-            // Landing, the count says when. Otherwise the anchor is in the
-            // middle of the sound, and the cycle in hand is stretched to reach
-            // it or ended on it, whichever is the smaller change.
-            const auto arrives = state.landing ? (--state.stepsLeft <= 0 || next >= anchor)
-                                               : (next >= anchor || anchor - next < 0.5 * Ts);
-
-            if (arrives)
-            {
-                next = anchor;
-                ++state.nextAnchor;
-                state.landing = false;
-                state.scale = 1.0;
-                state.landFrom = landingStartFor (state.nextAnchor);
-            }
+            next = anchor;
+            ++state.nextAnchor;
         }
-
         state.s = next;
     }
 
@@ -415,15 +338,46 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
         scratch.atFirst = atFirst;
         scratch.atLast = atLast;
     }
+    // Through a pause the recording itself goes out, and at each end of one it
+    // is faded against the resynthesis: out of it once the voice has stopped,
+    // back into it once the voice has started again. On the way back in the
+    // two line up, because the cursor is on the marks there.
+    const auto edge = (double) std::max<int64_t> (1, marks.pauseEdge);
+    size_t pause = 0;
+
+    while (pause < marks.pauses.size() && (double) marks.pauses[pause].end + edge <= (double) first)
+        ++pause;
+
     for (int64_t i = 0; i < outLen; ++i)
     {
+        const auto at = first + i;
+        const auto original = sampleLinear (r.src, r.srcOffset, r.srcLength, (double) at);
         const double w = scratch.winSum[(size_t) i];
-        r.dst[first + i - r.dstOffset] =
-            w > 1.0e-6 ? (float) (scratch.acc[(size_t) i] / w)
-                       : sampleLinear (r.src, r.srcOffset, r.srcLength, (double) (first + i));
+        const auto rendered = w > 1.0e-6 ? (float) (scratch.acc[(size_t) i] / w) : original;
+
+        while (pause < marks.pauses.size() && (double) marks.pauses[pause].end + edge <= (double) at)
+            ++pause;
+
+        // How much of the resynthesis to use here: all of it away from any
+        // pause, none of it inside one.
+        double share = 1.0;
+
+        for (auto k = pause; k < marks.pauses.size() && marks.pauses[k].begin <= at; ++k)
+        {
+            const auto& p = marks.pauses[k];
+            const auto in  = ((double) at - (double) p.begin) / edge;   // 0 where the pause begins
+            const auto out = ((double) at - (double) p.end) / edge;     // 0 where the voice returns
+
+            auto here = out >= 0.0 ? std::clamp (out, 0.0, 1.0) : 1.0 - std::clamp (in, 0.0, 1.0);
+            here = here * here * (3.0 - 2.0 * here);
+
+            share = std::min (share, here);
+        }
+
+        r.dst[at - r.dstOffset] = share >= 1.0 ? rendered
+                                               : original + (float) share * (rendered - original);
     }
 }
-
 //==============================================================================
 void psolaRenderRange (const float* src,
                        int64_t numSamples,

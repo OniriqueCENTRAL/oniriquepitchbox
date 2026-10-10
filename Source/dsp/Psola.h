@@ -29,14 +29,15 @@ namespace pb
     one another, which is heard as a pop; and one every few hundredths of a
     second is a flutter over the whole voice.
 
-    So an anchor sits where the voice comes back in after a pause, and the
-    cursor is not put there but brought there: across the pause leading up to
-    it, where there is no pitch to disturb, every step is lengthened or
-    shortened by the same small fraction so that the last one arrives exactly.
-    Note starts are deliberately not anchors: in legato singing they come
-    several to the second, in the middle of the sound.
+    So an anchor sits where the voice comes back in after a pause. The cursor
+    is put back on the marks somewhere in that pause, and it does not matter
+    where or how, because nothing it lays down there is used: through a pause
+    the recording is handed on untouched (see PitchMarkSet::pauses). The voice
+    then starts from a cursor that is exactly on its first mark. Note starts
+    are deliberately not anchors: in legato singing they come several to the
+    second, in the middle of the sound.
 
-    The one case with no pause to land in is a stretch voiced for longer than
+    The one case with no pause to reset in is a stretch voiced for longer than
     kMaxAnchorGapSeconds. There an anchor has to fall in the sound itself, and
     the cursor takes whichever is nearer of stretching the cycle it is in or
     ending it early, so that it is never off by more than half.
@@ -89,16 +90,7 @@ struct PsolaScratch
     {
         double s = 0.0;
         size_t nextAnchor = 0;
-
-        // The approach to that anchor: where the pause before it begins, and
-        // once the cursor is in it, the factor on every step and how many are
-        // left before it arrives.
-        double  landFrom  = 0.0;
-        double  scale     = 1.0;
-        int64_t stepsLeft = 0;
-        bool    landing   = false;
     };
-
     struct WalkMemo
     {
         bool valid = false;

@@ -273,6 +273,38 @@ PitchMarkSet detectPitchMarks (const float* samples,
         widest = std::max (widest, (double) (result.marks[i].position - result.marks[i - 1].position));
 
     result.widestSpacing = widest;
+
+    // The pauses: runs of unvoiced marks long enough to be the voice stopping,
+    // if only for a consonant. They need room for the hand-over at both ends,
+    // and anything shorter is the detector losing the pitch for a moment in
+    // the middle of a note.
+    const auto minPause = (int64_t) std::lround (0.02 * track.sampleRate);
+    const auto& m = result.marks;
+    constexpr int64_t kForever = (int64_t) 1 << 60;
+
+    result.pauseEdge = std::max<int64_t> (1, (int64_t) std::lround (0.008 * track.sampleRate));
+
+    for (size_t i = 0; i < m.size();)
+    {
+        if (m[i].voiced)
+        {
+            ++i;
+            continue;
+        }
+
+        auto j = i;
+
+        while (j < m.size() && ! m[j].voiced)
+            ++j;
+
+        const auto begin = i == 0 ? -kForever : m[i].position;
+        const auto end   = j == m.size() ? kForever : m[j].position;
+
+        if (i == 0 || j == m.size() || end - begin >= minPause)
+            result.pauses.push_back ({ begin, end });
+
+        i = j;
+    }
     return result;
 }
 

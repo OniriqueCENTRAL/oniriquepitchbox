@@ -90,6 +90,80 @@ double clicksPerSecond (const std::vector<float>& x, double rate)
 
     return (double) clicks / ((double) n / rate);
 }
+/** Clicks in the quiet between phrases, where there is nothing to hide them:
+    a sharp bend in a passage that was all but silent just before. Reported
+    against the reference so the ones the recording already had can be told
+    from the ones the rendering added, and with where each sits relative to
+    the phase anchors. */
+void reportQuietClicks (const char* label, const std::vector<float>& x, const std::vector<float>& reference,
+                        const Analysis& analysis)
+{
+    const auto n = (int64_t) x.size();
+    const auto rate = analysis.sampleRate;
+    double peak = 0.0;
+
+    for (const auto s : reference)
+        peak = std::max (peak, (double) std::abs (s));
+
+    auto bendAt = [] (const std::vector<float>& y, int64_t i)
+    {
+        return (double) std::abs (y[(size_t) i] - 2.0f * y[(size_t) i - 1] + y[(size_t) i - 2]);
+    };
+
+    int count = 0;
+
+    for (int64_t i = 1300; i < n - 10; ++i)
+    {
+        const auto bend = bendAt (x, i);
+
+        if (bend < 0.008 * peak)
+            continue;
+
+        double energy = 0.0;
+
+        for (auto k = i - 1200; k < i - 300; ++k)
+            energy += (double) x[(size_t) k] * x[(size_t) k];
+
+        if (std::sqrt (energy / 900.0) > 0.012 * peak)
+            continue;
+
+        // Was it there in the recording?
+        double original = 0.0;
+
+        for (auto k = i - 4; k <= i + 4; ++k)
+            original = std::max (original, bendAt (reference, k));
+
+        if (original > 0.5 * bend)
+        {
+            i += 2000;
+            continue;
+        }
+
+        int64_t nearestAnchor = 0, nearestDistance = 1 << 30;
+
+        for (const auto a : analysis.anchors)
+            if (std::abs (a - i) < std::abs (nearestDistance))
+            {
+                nearestDistance = i - a;
+                nearestAnchor = a;
+            }
+
+        const auto mark = analysis.marks.nearest ((double) i);
+        const auto& m = analysis.marks.marks[(size_t) mark];
+
+        if (count < 12)
+            std::printf ("      %s  %.4f s  bend %.4f  %+lld from anchor %.4f s  mark %s, spacing %lld\n",
+                         label, (double) i / rate, bend, (long long) nearestDistance, (double) nearestAnchor / rate,
+                         m.voiced ? "voiced" : "unvoiced",
+                         (long long) (mark + 1 < (int) analysis.marks.marks.size()
+                                          ? analysis.marks.marks[(size_t) mark + 1].position - m.position : 0));
+
+        ++count;
+        i += 2000;
+    }
+
+    std::printf ("  clicks added in quiet passages, %s: %d\n", label, count);
+}
 double worstDifference (const std::vector<float>& a, const std::vector<float>& b, int64_t from)
 {
     double worst = 0.0;
@@ -282,6 +356,7 @@ int main (int argc, char** argv)
 
         writeWav (outDir.getChildFile ("2 up a semitone.wav"), out, rate);
         std::printf ("  clicks per second, up a semitone     : %5.2f\n", clicksPerSecond (out, rate));
+        reportQuietClicks ("semitone", out, mono, *analysis);
 
         // The same audio whatever the host does: other block sizes, each block
         // asked for twice, and playback started part of the way through.
@@ -306,6 +381,7 @@ int main (int argc, char** argv)
         const auto out = renderAll (analysis, mono, edits);
         writeWav (outDir.getChildFile ("3 amount at full.wav"), out, rate);
         std::printf ("  clicks per second, amount at full    : %5.2f\n", clicksPerSecond (out, rate));
+        reportQuietClicks ("amount", out, mono, *analysis);
         std::printf ("  irregular cycles, amount at full     : %5.2f %%   broken: %5.3f %%\n",
                      100.0 * irregularCycles (out, *analysis, 1.0), 100.0 * irregularCycles (out, *analysis, 1.0, 0.2));
     }

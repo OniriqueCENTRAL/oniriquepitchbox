@@ -17,9 +17,32 @@ struct PitchMark
     bool    voiced   = false;
 };
 
+/** A stretch where the voice has stopped: [begin, end) in samples, from the
+    first unvoiced mark to the mark where the voice comes back in. */
+struct Pause
+{
+    int64_t begin = 0;
+    int64_t end   = 0;
+};
+
 struct PitchMarkSet
 {
     std::vector<PitchMark> marks;
+
+    /** The pauses, in order. Only real ones: a gap in the voicing too short to
+        be anything but a flicker of the detector is not listed. The stretch
+        before the first voiced mark and the one after the last are pauses
+        whatever their length, and reach to the ends of the take and beyond.
+
+        Inside a pause the renderer does not resynthesise anything; it hands
+        the recording through as it is. There is no pitch there to correct, and
+        laying a breath down again out of grains only moves and doubles the
+        small sounds in it. */
+    std::vector<Pause> pauses;
+
+    /** How long the hand-over between the recording and the resynthesis takes
+        at each end of a pause, in samples. */
+    int64_t pauseEdge = 0;
 
     /** The widest gap between two marks, or the longest period if that is
         wider. The renderer needs it on every block, so it is worked out once
