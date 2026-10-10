@@ -47,6 +47,15 @@ int64_t RegionRenderer::paddingSamples (float formantRatio) const noexcept
     return analysis->paddingFor (formantRatio);
 }
 
+void RegionRenderer::continueFrom (const RegionRenderer& other) noexcept
+{
+    scratch.walkKey     = other.scratch.walkKey;
+    scratch.walkMarks   = other.scratch.walkMarks;
+    scratch.walkAnchors = other.scratch.walkAnchors;
+    scratch.atFirst     = other.scratch.atFirst;
+    scratch.atLast      = other.scratch.atLast;
+}
+
 bool RegionRenderer::isPassThrough (const EditState& edits) const noexcept
 {
     if (analysis == nullptr || analysis->marks.marks.empty())
@@ -128,7 +137,14 @@ void RegionRenderer::render (const float* src,
     r.anchors      = &analysis->anchors;
     r.ratioAt      = &ratioAtSample;
     r.ratioContext = &query;
-    r.walkKey      = edits.version;
+
+    // The same key whatever the edits: when they change in the middle of
+    // playback, the cursor carries on from where it is with the new correction,
+    // rather than being sent back to the last anchor to arrive at a different
+    // point in the cycle. The sound bends to the edit instead of breaking on
+    // it. The next anchor puts the cursor back on the path a fresh render
+    // would take, so nothing of this outlives the phrase it happened in.
+    r.walkKey      = 1;
     r.formantRatio = edits.settings.formantRatio;
     r.firstSample  = firstSample;
     r.lastSample   = lastSample;

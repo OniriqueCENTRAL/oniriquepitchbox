@@ -256,7 +256,7 @@ bool TransferSession::pushToFifo (const AudioBuffer<float>& buffer) noexcept
     return true;
 }
 
-void TransferSession::refreshAudioState (bool playing) noexcept
+void TransferSession::refreshAudioState (bool playing, int64 playingAt) noexcept
 {
     const auto latest = revision.load();
 
@@ -295,12 +295,26 @@ void TransferSession::refreshAudioState (bool playing) noexcept
 
     if (edits.version != audioEdits.version)
     {
-        if (playing && sameSource && sliceLength > 0)
+        // Only when the slice in hand is the one being played: after a locate
+        // it belongs to somewhere else in the take, and there is nothing on
+        // the way out to fade from.
+        const auto sounding = sliceLength > 0
+                              && playingAt >= sliceStart
+                              && playingAt <= sliceStart + sliceLength;
+
+        if (playing && sameSource && sounding)
         {
             // What was being played becomes what is faded from. Its slice is
             // already rendered, so it changes hands rather than being redone.
             std::swap (fadeEdits, audioEdits);
             std::swap (fadeSlice, renderSlice);
+
+            // The renderer that was playing goes on playing the old version
+            // for the length of the fade, and the other takes over from the
+            // same point in the cycle: two renderings that start in phase can
+            // be faded between without one cancelling the other.
+            std::swap (fadeRenderer, renderer);
+            renderer.continueFrom (fadeRenderer);
             fadeSliceStart = sliceStart;
             fadeSliceLength = sliceLength;
             fadeRemaining = fadeLength;
@@ -376,7 +390,7 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     heldVoice.gain = 0.0f;
     fadingVoice.gain = 0.0f;
 
-    refreshAudioState (true);
+    refreshAudioState (true, audioTake != nullptr ? *time - audioTake->startInSong : 0);
 
     if (audioTake == nullptr || ! approximatelyEqual (audioTake->sampleRate, sampleRate))
         return;

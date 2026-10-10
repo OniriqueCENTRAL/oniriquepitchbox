@@ -134,7 +134,8 @@ private:
     void drainFifo();
     void finishCapture();
     bool pushToFifo (const AudioBuffer<float>&) noexcept;
-    void refreshAudioState (bool playing) noexcept;
+    /** `playingAt` is where in the take playback is, when it is playing. */
+    void refreshAudioState (bool playing, int64 playingAt = 0) noexcept;
     void renderAudition (AudioBuffer<float>&) noexcept;
     bool rebuildAuditionClip();
     void applyEdits (pb::EditState);

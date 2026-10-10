@@ -51,6 +51,13 @@ public:
                  float* dst,
                  int64_t dstOffset) noexcept;
 
+    /** Takes up the synthesis cursor where another renderer of the same take
+        has left it. For a caller that keeps two renderers going across an edit,
+        one on the old version and one on the new: the new one then carries on
+        from the phase the old one was at, instead of starting again from the
+        last anchor and landing somewhere else in the cycle. */
+    void continueFrom (const RegionRenderer& other) noexcept;
+
     /** True when there is nothing to do and the caller may pass audio through
         untouched — which is also the cheapest correct thing to do while an
         analysis is still running. */

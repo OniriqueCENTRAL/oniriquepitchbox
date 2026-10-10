@@ -272,39 +272,114 @@ namespace
 
 namespace
 {
-    /** True when a note leaves the pitch of its samples alone. */
-    inline bool leavesPitchAlone (const Note& n) noexcept
+    /** Notes closer together than this are one phrase: the correction glides
+        from one to the next across the gap instead of letting go in between. */
+    constexpr double kLegatoGapSeconds = 0.1;
+
+    /** How far a note is moved as a whole, in cents. */
+    inline float shiftOf (const Note& n) noexcept
     {
-        return (n.bypassed || n.correctAmount <= 0.0f) && std::abs (n.vibratoScale - 1.0f) < 1.0e-6f;
+        return n.bypassed ? 0.0f : n.correctAmount * (n.targetCents - n.centsDetected);
     }
 
-    /** The ratio for one sample of one note. The curve and the single-sample
-        query both come through here, so they cannot disagree. */
-    inline bool ratioInNote (const PitchTrack& track, const Note& n, double ramp, int64_t s, float& ratio) noexcept
+    /** The correction, in cents, at one sample. The curve and the single-sample
+        query both come through here, so they cannot disagree.
+
+        It has two parts. One is how far the note as a whole is moved, and that
+        part never lets go at a note boundary: it glides from one note's shift to
+        the next one's across the boundary, over the transition time. Letting it
+        fall back to nothing at every edge, as it once did, hands the voice its
+        own pitch back for a moment between any two notes, several times a
+        second in a legato line, and that is heard as a judder. Only at the edge
+        of a phrase, where no note follows, is there nothing to glide to; and
+        there the shift is simply held, because the voice is stopping anyway.
+
+        The other part reshapes the movement inside the note, the vibrato, and
+        is eased in and out at the note's own edges.
+    */
+    bool correctionCentsAt (const PitchTrack& track,
+                            const std::vector<Note>& notes,
+                            double ramp,
+                            int64_t s,
+                            float& cents) noexcept
     {
-        float origCents = 0.0f;
+        const auto legatoGap = (int64_t) (kLegatoGapSeconds * track.sampleRate);
 
-        if (! interpolatedCents (track, s, origCents))
-            return false;
+        auto middle = [] (const Note& n) { return (double) (n.startSample + n.endSample) * 0.5; };
 
-        const auto shift = n.bypassed ? 0.0f
-                                      : n.correctAmount * (n.targetCents - n.centsDetected);
+        // The shift half way across the join between two neighbouring notes.
+        auto glide = [&] (const Note& from, const Note& to, float& shift)
+        {
+            if (to.startSample - from.endSample > legatoGap)
+                return false;
 
-        // The performance inside the note, relative to where the note sits.
-        const auto residual = origCents - n.centsDetected;
-        const auto vib = n.bypassed ? residual : n.vibratoScale * residual;
+            const auto begins = std::max ((double) from.endSample - ramp, middle (from));
+            const auto ends   = std::min ((double) to.startSample + ramp, middle (to));
 
-        // Ease the correction in and out so note edges do not click.
-        const auto dIn  = (double) (s - n.startSample) / ramp;
-        const auto dOut = (double) (n.endSample - 1 - s) / ramp;
-        const auto env  = smoothStep (std::min (dIn, dOut));
+            if ((double) s < begins || (double) s >= ends || ends <= begins)
+                return false;
 
-        const auto newCents = n.centsDetected + (float) env * (shift + vib)
-                                              + (float) (1.0 - env) * residual;
-        const auto delta = newCents - origCents;
+            const auto u = (float) smoothStep (((double) s - begins) / (ends - begins));
+            shift = shiftOf (from) + u * (shiftOf (to) - shiftOf (from));
+            return true;
+        };
 
-        ratio = (float) std::pow (2.0, delta / 1200.0);
+        const auto count = (int) notes.size();
+        const auto idx = noteAtSample (notes, s);
+
+        if (idx < 0)
+        {
+            // Between two notes: all there is here is the glide, if they are
+            // close enough to have one.
+            int next = 0;
+
+            while (next < count && notes[(size_t) next].startSample <= s)
+                ++next;
+
+            float shift = 0.0f;
+
+            if (next <= 0 || next >= count || ! glide (notes[(size_t) next - 1], notes[(size_t) next], shift))
+                return false;
+
+            cents = shift;
+            return true;
+        }
+
+        const auto& n = notes[(size_t) idx];
+        auto shift = shiftOf (n);
+
+        if (idx > 0)
+            glide (notes[(size_t) idx - 1], n, shift);
+
+        if (idx + 1 < count)
+            glide (n, notes[(size_t) idx + 1], shift);
+
+        float movement = 0.0f;
+
+        if (! n.bypassed && std::abs (n.vibratoScale - 1.0f) >= 1.0e-6f)
+        {
+            float origCents = 0.0f;
+
+            if (interpolatedCents (track, s, origCents))
+            {
+                // The performance inside the note, relative to where the note sits.
+                const auto residual = origCents - n.centsDetected;
+
+                const auto dIn  = (double) (s - n.startSample) / ramp;
+                const auto dOut = (double) (n.endSample - 1 - s) / ramp;
+                const auto env  = (float) smoothStep (std::min (dIn, dOut));
+
+                movement = env * (n.vibratoScale - 1.0f) * residual;
+            }
+        }
+
+        cents = shift + movement;
         return true;
+    }
+
+    inline float ratioFromCents (float cents) noexcept
+    {
+        return std::abs (cents) < 1.0e-4f ? 1.0f : (float) std::pow (2.0, (double) cents / 1200.0);
     }
 }
 
@@ -316,42 +391,8 @@ void buildPitchRatioCurve (const PitchTrack& track,
                            int64_t count,
                            float* ratioOut)
 {
-    std::fill (ratioOut, ratioOut + count, 1.0f);
-
-    if (! settings.enabled || notes.empty() || track.empty())
-        return;
-
-    const auto ramp = std::max (1.0, settings.transitionSeconds * track.sampleRate);
-
-    // Walk the requested span note by note rather than sample by sample
-    // searching the whole list: the renderer calls this on every block.
-    int idx = noteAtSample (notes, first);
-
-    if (idx < 0)
-    {
-        // Start before the first note in range; find the first note that overlaps.
-        idx = 0;
-
-        while (idx < (int) notes.size() && notes[(size_t) idx].endSample <= first)
-            ++idx;
-    }
-
-    for (; idx < (int) notes.size(); ++idx)
-    {
-        const auto& n = notes[(size_t) idx];
-
-        if (n.startSample >= first + count)
-            break;
-
-        if (leavesPitchAlone (n))
-            continue;
-
-        const auto from = std::max (n.startSample, first);
-        const auto to   = std::min (n.endSample, first + count);
-
-        for (auto s = from; s < to; ++s)
-            ratioInNote (track, n, ramp, s, ratioOut[s - first]);
-    }
+    for (int64_t i = 0; i < count; ++i)
+        ratioOut[i] = pitchRatioAt (track, notes, settings, first + i);
 }
 
 float pitchRatioAt (const PitchTrack& track,
@@ -362,19 +403,12 @@ float pitchRatioAt (const PitchTrack& track,
     if (! settings.enabled || notes.empty() || track.empty())
         return 1.0f;
 
-    const auto idx = noteAtSample (notes, sample);
+    float cents = 0.0f;
 
-    if (idx < 0)
+    if (! correctionCentsAt (track, notes, std::max (1.0, settings.transitionSeconds * track.sampleRate), sample, cents))
         return 1.0f;
 
-    const auto& n = notes[(size_t) idx];
-
-    if (leavesPitchAlone (n) || sample < n.startSample || sample >= n.endSample)
-        return 1.0f;
-
-    float ratio = 1.0f;
-    ratioInNote (track, n, std::max (1.0, settings.transitionSeconds * track.sampleRate), sample, ratio);
-    return ratio;
+    return ratioFromCents (cents);
 }
 //==============================================================================
 void buildGainCurve (const std::vector<Note>& notes,

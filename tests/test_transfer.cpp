@@ -336,6 +336,51 @@ int main()
 
             std::snprintf (d, sizeof d, "steepest step %.0f%% of the signal's own", 100.0 * worst / ordinary);
             check (worst < 1.3f * ordinary, "an edit during playback does not click", d);
+
+            // Nor may it duck. A knob being turned changes the correction a
+            // little at a time, over and over; if each new rendering started
+            // somewhere else in the cycle, fading into it would cancel part of
+            // the sound, and the level would sag every time.
+            const auto& held = analysis->notes[2];
+            const auto from = held.startSample + 4800, to = held.endSample - 4800;
+
+            play (session, kSongStart + held.startSample - 2000, kSongStart + from, 0.0f);
+
+            std::vector<float> turned;
+
+            for (auto pos = from; pos < to; pos += 500)
+            {
+                auto changed = original;
+                changed.settings.globalAmount = ((pos / 500) % 2 == 0) ? 0.82f : 1.0f;
+                changed.settings.transitionSeconds = ((pos / 500) % 3 == 0) ? 0.02 : 0.07;
+                changed.refreshUntouched();
+                session.setEdits (changed);
+
+                const auto piece = play (session, kSongStart + pos, kSongStart + std::min (pos + 500, to), 0.0f);
+                turned.insert (turned.end(), piece[0].begin(), piece[0].end());
+            }
+
+            session.setEdits (original);
+            play (session, kSongStart, kSongStart + 4000, 0.0f);
+
+            auto level = [] (const float* x, size_t count)
+            {
+                double sum = 0.0;
+
+                for (size_t i = 0; i < count; ++i)
+                    sum += (double) x[i] * x[i];
+
+                return std::sqrt (sum / (double) count);
+            };
+
+            double lowest = 1.0e9;
+
+            for (size_t i = 0; i + 480 <= turned.size(); i += 240)
+                lowest = std::min (lowest, level (turned.data() + i, 480)
+                                               / level (corrected[0].data() + (size_t) from + i, 480));
+
+            std::snprintf (d, sizeof d, "lowest level %.1f dB against the steady rendering", 20.0 * std::log10 (lowest));
+            check (lowest > 0.8, "nor does it duck while a knob is turned", d);
         }
 
         // Holding a note: with the transport stopped, that stretch of the take
