@@ -14,6 +14,9 @@ namespace
 constexpr float kMinRatio = 0.25f;
 constexpr float kMaxRatio = 4.0f;
 constexpr float kMinFormant = 0.5f;
+
+/** How many cycles before an anchor the cursor starts being steered onto it. */
+constexpr double kApproachCycles = 24.0;
 constexpr float kMaxFormant = 2.0f;
 
 inline float sampleLinear (const float* src, int64_t srcOffset, int64_t srcLength, double absPos) noexcept
@@ -269,6 +272,11 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
 
     PsolaScratch::WalkMemo atFirst, atLast;
 
+    // A set of marks made by hand, with no pauses worked out, falls back on
+    // the voiced flag of each mark.
+    const auto knowsPauses = marks.pauseEdge > 0;
+    size_t walkPause = 0;
+
     const double endAt = (double) last + 2.0 * widest / (double) kMinRatio;
     const double hardStop = (double) marks.marks.back().position + 4.0 * widest;
 
@@ -288,8 +296,39 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
         const auto hasAnchor = state.nextAnchor < anchors.size();
         const auto anchor = hasAnchor ? (double) anchors[state.nextAnchor] : 0.0;
 
-        const double ratio = m.voiced ? ratioAt (s) : 1.0;
-        const double Ts = std::max (4.0, spacingRight (i) / ratio);
+        // Inside a pause the steps follow the marks. Everywhere else they
+        // follow the pitch being asked for — including where the detector lost
+        // the pitch for a moment but the voice carried on, or the voice would
+        // be handed its own pitch back for as long as that lasted.
+        while (walkPause < marks.pauses.size() && (double) marks.pauses[walkPause].end <= s)
+            ++walkPause;
+
+        const auto inPause = walkPause < marks.pauses.size() && (double) marks.pauses[walkPause].begin <= s;
+        const auto shifted = knowsPauses ? ! inPause : m.voiced;
+
+        const double ratio = shifted ? ratioAt (s) : 1.0;
+        double Ts = std::max (4.0, spacingRight (i) / ratio);
+
+        // Coming up to an anchor, the cursor is steered onto it rather than
+        // dropped there. Each step it takes the distance left, the nearest
+        // whole number of cycles that would cover it, and that share of the
+        // distance; so what would have been one cycle half its proper length
+        // is a couple of dozen cycles each a part or two in a hundred out.
+        auto arrives = false;
+
+        if (hasAnchor)
+        {
+            const auto left = anchor - s;
+
+            if (left < kApproachCycles * Ts)
+            {
+                const auto cycles = std::max<int64_t> (1, std::min ((int64_t) std::lround (left / Ts),
+                                                                    (int64_t) (left / 4.0)));
+                Ts = left / (double) cycles;
+                arrives = cycles == 1;
+            }
+        }
+
         // Asymmetric Hann halves: each half spans the gap to its neighbour, so
         // consecutive grains sum to exactly one however irregular the marks are.
         // When pitching down the grains must stretch to keep the overlap closed.
@@ -318,15 +357,12 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
 
         double next = s + Ts;
 
-        // An anchor after a pause is reached inside the pause, where nothing
-        // the cursor lays down is heard. One in the middle of the sound is
-        // not, so there the cycle in hand is stretched to reach it or ended on
-        // it, whichever is the smaller change.
-        if (hasAnchor && (next >= anchor || anchor - next < 0.5 * Ts))
+        if (hasAnchor && (arrives || next >= anchor))
         {
             next = anchor;
             ++state.nextAnchor;
         }
+
         state.s = next;
     }
 

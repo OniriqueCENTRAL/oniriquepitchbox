@@ -274,15 +274,38 @@ PitchMarkSet detectPitchMarks (const float* samples,
 
     result.widestSpacing = widest;
 
-    // The pauses: runs of unvoiced marks long enough to be the voice stopping,
-    // if only for a consonant. They need room for the hand-over at both ends,
-    // and anything shorter is the detector losing the pitch for a moment in
-    // the middle of a note.
-    const auto minPause = (int64_t) std::lround (0.02 * track.sampleRate);
+    // The pauses: runs of unvoiced marks where the voice has really stopped.
+    //
+    // A long gap always is one. A short one need not be: when the pitch moves
+    // quickly from one note to the next the detector can lose it for a few
+    // hundredths of a second while the voice carries straight on, and treating
+    // that as a pause would put a join, and the singer's own pitch, in the
+    // middle of every such slide. What tells the two apart is the level. A
+    // consonant closes the mouth and the sound all but goes; a slide is as
+    // loud as the notes either side of it.
+    const auto shortest = (int64_t) std::lround (0.02 * track.sampleRate);
+    const auto certain  = (int64_t) std::lround (0.05 * track.sampleRate);
+    const auto around   = (int64_t) std::lround (0.03 * track.sampleRate);
     const auto& m = result.marks;
     constexpr int64_t kForever = (int64_t) 1 << 60;
 
     result.pauseEdge = std::max<int64_t> (1, (int64_t) std::lround (0.008 * track.sampleRate));
+
+    auto level = [samples, numSamples] (int64_t from, int64_t to)
+    {
+        from = std::clamp<int64_t> (from, 0, numSamples);
+        to   = std::clamp<int64_t> (to, from, numSamples);
+
+        if (to <= from)
+            return 0.0;
+
+        double sum = 0.0;
+
+        for (auto i = from; i < to; ++i)
+            sum += (double) samples[i] * (double) samples[i];
+
+        return std::sqrt (sum / (double) (to - from));
+    };
 
     for (size_t i = 0; i < m.size();)
     {
@@ -297,10 +320,16 @@ PitchMarkSet detectPitchMarks (const float* samples,
         while (j < m.size() && ! m[j].voiced)
             ++j;
 
-        const auto begin = i == 0 ? -kForever : m[i].position;
-        const auto end   = j == m.size() ? kForever : m[j].position;
+        const auto atStart = i == 0, atEnd = j == m.size();
+        const auto begin = atStart ? -kForever : m[i].position;
+        const auto end   = atEnd ? kForever : m[j].position;
 
-        if (i == 0 || j == m.size() || end - begin >= minPause)
+        auto isPause = atStart || atEnd || end - begin >= certain;
+
+        if (! isPause && end - begin >= shortest)
+            isPause = level (begin, end) < 0.25 * std::max (level (begin - around, begin), level (end, end + around));
+
+        if (isPause)
             result.pauses.push_back ({ begin, end });
 
         i = j;

@@ -164,6 +164,164 @@ void reportQuietClicks (const char* label, const std::vector<float>& x, const st
 
     std::printf ("  clicks added in quiet passages, %s: %d\n", label, count);
 }
+/** Sags where the voice stops and starts. At each end of a pause the level of
+    the rendering is followed in short steps against the recording's; a place
+    where it drops below 70% while the recording is not quiet is two
+    out-of-step copies of the voice being faded through one another, which is
+    heard as a crackle on the join. */
+void reportEdgeSags (const char* label, const std::vector<float>& x, const std::vector<float>& reference,
+                     const Analysis& analysis)
+{
+    const auto n = (int64_t) x.size();
+    const auto rate = analysis.sampleRate;
+    // Long enough to hold two cycles of a low voice, or the level being
+    // followed would rise and fall with the cycle itself.
+    const auto win = (int64_t) (0.012 * rate);
+    double peak = 0.0;
+
+    for (const auto s : reference)
+        peak = std::max (peak, (double) std::abs (s));
+
+    auto level = [win] (const std::vector<float>& y, int64_t from)
+    {
+        double sum = 0.0;
+
+        for (auto i = from; i < from + win; ++i)
+            sum += (double) y[(size_t) i] * y[(size_t) i];
+
+        return std::sqrt (sum / (double) win);
+    };
+
+    int edges = 0, sagging = 0, shown = 0;
+    double worst = 1.0;
+
+    auto look = [&] (int64_t edge, const char* which)
+    {
+        if (edge < (int64_t) (0.05 * rate) || edge > n - (int64_t) (0.05 * rate))
+            return;
+
+        double lowest = 1.0;
+        bool loud = false;
+
+        for (auto at = edge - (int64_t) (0.02 * rate); at < edge + (int64_t) (0.02 * rate); at += win / 4)
+        {
+            const auto original = level (reference, at);
+
+            if (original < 0.04 * peak)
+                continue;
+
+            loud = true;
+            lowest = std::min (lowest, level (x, at) / original);
+        }
+
+        if (! loud)
+            return;
+
+        ++edges;
+        worst = std::min (worst, lowest);
+
+        if (lowest < 0.7)
+        {
+            ++sagging;
+
+            if (shown++ < 6)
+                std::printf ("      %s  %.4f s  %s  down to %.0f%%\n", label, (double) edge / rate, which, 100.0 * lowest);
+        }
+    };
+
+    for (const auto& p : analysis.marks.pauses)
+    {
+        look (p.begin, "voice stops");
+        look (p.end, "voice returns");
+    }
+
+    std::printf ("  sags at the ends of pauses, %s: %d of %d audible edges, worst %.0f%%\n",
+                 label, sagging, edges, 100.0 * worst);
+}
+/** Sharp events in the rendering that the recording does not have anywhere
+    near, wherever they fall: each with how far it is from the nearest end of a
+    pause and from the nearest note boundary, to show what it goes with. */
+std::vector<int64_t> sharpEvents (const std::vector<float>& x, double rate, double factor)
+{
+    const auto n = (int64_t) x.size();
+    const auto half = (int64_t) (0.02 * rate);
+    std::vector<double> sum ((size_t) n + 1, 0.0);
+    std::vector<float> bend ((size_t) n, 0.0f);
+    double peak = 0.0;
+
+    for (int64_t i = 2; i < n; ++i)
+    {
+        bend[(size_t) i] = std::abs (x[(size_t) i] - 2.0f * x[(size_t) i - 1] + x[(size_t) i - 2]);
+        peak = std::max (peak, (double) std::abs (x[(size_t) i]));
+    }
+
+    for (int64_t i = 0; i < n; ++i)
+        sum[(size_t) i + 1] = sum[(size_t) i] + (double) bend[(size_t) i];
+
+    std::vector<int64_t> events;
+    int64_t last = -100000;
+
+    for (int64_t i = half; i < n - half; ++i)
+    {
+        const auto typical = (sum[(size_t) (i + half)] - sum[(size_t) (i - half)]) / (double) (2 * half);
+
+        if ((double) bend[(size_t) i] > factor * typical && (double) bend[(size_t) i] > 0.004 * peak && i - last > half / 2)
+        {
+            events.push_back (i);
+            last = i;
+        }
+    }
+
+    return events;
+}
+
+void reportAddedEvents (const char* label, const std::vector<float>& x, const std::vector<float>& reference,
+                        const Analysis& analysis)
+{
+    const auto rate = analysis.sampleRate;
+    const auto mine = sharpEvents (x, rate, 7.0);
+    const auto theirs = sharpEvents (reference, rate, 4.5);
+    const auto near = (int64_t) (0.03 * rate);
+
+    int added = 0, atEdges = 0, atNotes = 0;
+
+    for (const auto at : mine)
+    {
+        bool known = false;
+
+        for (const auto other : theirs)
+            known = known || std::abs (other - at) < near;
+
+        if (known)
+            continue;
+
+        int64_t toEdge = 1 << 30, toNote = 1 << 30;
+        const char* edgeKind = "";
+
+        for (const auto& p : analysis.marks.pauses)
+        {
+            if (std::abs (at - p.begin) < std::abs (toEdge)) { toEdge = at - p.begin; edgeKind = "stop"; }
+            if (std::abs (at - p.end) < std::abs (toEdge))   { toEdge = at - p.end;   edgeKind = "return"; }
+        }
+
+        for (const auto& note : analysis.notes)
+        {
+            if (std::abs (at - note.startSample) < std::abs (toNote)) toNote = at - note.startSample;
+            if (std::abs (at - note.endSample) < std::abs (toNote))   toNote = at - note.endSample;
+        }
+
+        atEdges += std::abs (toEdge) < near ? 1 : 0;
+        atNotes += std::abs (toNote) < near ? 1 : 0;
+
+        if (added++ < 14)
+            std::printf ("      %s  %.4f s  value %+.3f  %+.1f ms from a %s, %+.1f ms from a note boundary\n",
+                         label, (double) at / rate, x[(size_t) at], 1000.0 * (double) toEdge / rate, edgeKind,
+                         1000.0 * (double) toNote / rate);
+    }
+
+    std::printf ("  sharp events added, %s: %d (%d by a pause edge, %d by a note boundary)\n",
+                 label, added, atEdges, atNotes);
+}
 double worstDifference (const std::vector<float>& a, const std::vector<float>& b, int64_t from)
 {
     double worst = 0.0;
@@ -357,6 +515,8 @@ int main (int argc, char** argv)
         writeWav (outDir.getChildFile ("2 up a semitone.wav"), out, rate);
         std::printf ("  clicks per second, up a semitone     : %5.2f\n", clicksPerSecond (out, rate));
         reportQuietClicks ("semitone", out, mono, *analysis);
+        reportEdgeSags ("semitone", out, mono, *analysis);
+        reportAddedEvents ("semitone", out, mono, *analysis);
 
         // The same audio whatever the host does: other block sizes, each block
         // asked for twice, and playback started part of the way through.
@@ -372,6 +532,29 @@ int main (int argc, char** argv)
                      ((double) n / rate) / took);
     }
 
+    // Notes moved by hand, each somewhere different from its neighbours: the
+    // joins between them then have a long way to travel.
+    {
+        EditState edits;
+        edits.adoptAnalysis (*analysis);
+
+        static const float moves[] = { 200.0f, -100.0f, 0.0f, 300.0f, -200.0f };
+
+        for (size_t i = 0; i < edits.notes.size(); ++i)
+        {
+            edits.notes[i].targetCents = edits.notes[i].centsDetected + moves[i % 5];
+            edits.notes[i].correctAmount = 1.0f;
+            edits.touched[i] = true;
+        }
+
+        edits.bump();
+
+        const auto out = renderAll (analysis, mono, edits);
+        writeWav (outDir.getChildFile ("4 notes moved apart.wav"), out, rate);
+        reportQuietClicks ("moved", out, mono, *analysis);
+        reportEdgeSags ("moved", out, mono, *analysis);
+        reportAddedEvents ("moved", out, mono, *analysis);
+    }
     // And what the AMOUNT knob does at full: every note onto the nearest semitone.
     {
         EditState edits;
@@ -382,6 +565,8 @@ int main (int argc, char** argv)
         writeWav (outDir.getChildFile ("3 amount at full.wav"), out, rate);
         std::printf ("  clicks per second, amount at full    : %5.2f\n", clicksPerSecond (out, rate));
         reportQuietClicks ("amount", out, mono, *analysis);
+        reportEdgeSags ("amount", out, mono, *analysis);
+        reportAddedEvents ("amount", out, mono, *analysis);
         std::printf ("  irregular cycles, amount at full     : %5.2f %%   broken: %5.3f %%\n",
                      100.0 * irregularCycles (out, *analysis, 1.0), 100.0 * irregularCycles (out, *analysis, 1.0, 0.2));
     }

@@ -39,8 +39,8 @@ namespace pb
 
     The one case with no pause to reset in is a stretch voiced for longer than
     kMaxAnchorGapSeconds. There an anchor has to fall in the sound itself, and
-    the cursor takes whichever is nearer of stretching the cycle it is in or
-    ending it early, so that it is never off by more than half.
+    the cursor is steered onto it over its last couple of dozen cycles rather
+    than dropped there.
 */constexpr double kMaxAnchorGapSeconds = 2.0;
 std::vector<int64_t> buildPhaseAnchors (const PitchMarkSet& marks,
                                         const std::vector<int64_t>& noteStarts,
