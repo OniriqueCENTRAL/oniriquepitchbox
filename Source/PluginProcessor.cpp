@@ -23,6 +23,9 @@ bool PitchBoxProcessor::isBusesLayoutSupported (const BusesLayout& layouts) cons
 
 void PitchBoxProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    // Many hosts call this just before a bounce: the licence is read again then.
+    license.refresh();
+
     preparedRate = sampleRate;
     preparedBlock = samplesPerBlock;
 
@@ -55,12 +58,16 @@ void PitchBoxProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
     if (isBoundToARA())
     {
         processBlockForARA (buffer, isNonRealtime() ? Realtime::no : Realtime::yes, getPlayHead());
-        return;
+    }
+    else
+    {
+        // Outside ARA the buffer is the only audio there is: the transfer session
+        // records from it, and replaces it only where it has a take to play.
+        transfer.process (buffer, position);
     }
 
-    // Outside ARA the buffer is the only audio there is: the transfer session
-    // records from it, and replaces it only where it has a take to play.
-    transfer.process (buffer, position);
+    // Without a licence the output is replaced by noise: see License/DemoNoise.h.
+    license.process (buffer, getSampleRate(), isNonRealtime());
 }
 
 void PitchBoxProcessor::didBindToARA() noexcept

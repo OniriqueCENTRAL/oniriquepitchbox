@@ -357,6 +357,11 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     setSize (1200, 770);
 
     refreshTarget();
+    // The licence pill and the activation page, over everything else.
+    licenseOverlay = std::make_unique<license::Overlay> ("ONIRIQUE PITCHBOX", processor.license);
+    addAndMakeVisible (*licenseOverlay);
+    resized();
+
     startTimerHz (30);
 }
 
@@ -1355,6 +1360,9 @@ void PitchBoxEditor::filesDropped (const StringArray& files, int, int)
 
 void PitchBoxEditor::resized()
 {
+    if (licenseOverlay != nullptr)
+        licenseOverlay->fit (getLocalBounds(), 1.0f, { getWidth() - 262, 75, 248, 26 });
+
     auto bounds = getLocalBounds();
     auto header = bounds.removeFromTop (kHeaderHeight);
 

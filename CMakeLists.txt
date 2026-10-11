@@ -119,6 +119,11 @@ target_compile_definitions(OniriquePitchBox PUBLIC
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_REPORT_APP_USAGE=0)
 
+# The ONIRIQUE licence: the file ONIRIQUE CENTRAL writes is checked, and the editor
+# shows the activation page. See License/README.md.
+include(License/OniriqueLicense.cmake)
+onirique_add_license(OniriquePitchBox)
+
 target_link_libraries(OniriquePitchBox
     PRIVATE
         pitchbox_core

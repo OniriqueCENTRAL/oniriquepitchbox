@@ -3,6 +3,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "License/LicenseOverlay.h"
 #include "PluginProcessor.h"
 #include "ui/NoteGrid.h"
 #include "ui/Theme.h"
@@ -164,6 +165,9 @@ private:
     float progress = 0.0f;
 
     SharedResourcePointer<AnalysisQueue> analysisQueue;
+
+    // Last, so that it is destroyed first and drawn over everything else.
+    std::unique_ptr<license::Overlay> licenseOverlay;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PitchBoxEditor)
 };

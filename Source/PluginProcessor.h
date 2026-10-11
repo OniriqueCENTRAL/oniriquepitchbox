@@ -3,6 +3,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "License/LicenseGuard.h"
 #include "ara/PitchBoxARA.h"
 #include "transfer/TransferSession.h"
 
@@ -79,6 +80,12 @@ private:
     std::atomic<int64> transportPosition { 0 };
     std::atomic<bool> transportPlaying { false };
 
+public:
+    /** The ONIRIQUE licence of this plugin on this machine: bought, on trial, or
+        neither. See License/LicenseGuard.h. */
+    license::Guard license { "onirique-pitchbox" };
+
+private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PitchBoxProcessor)
 };
 
