@@ -463,10 +463,20 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     if (! playing || ! time.hasValue())
     {
         wasPlaying = false;
+
+        if (localPlaying.load())
+        {
+            playLocally (buffer);
+            return;
+        }
+
         fadeRemaining = 0;
         renderAudition (buffer);
         return;
     }
+
+    // The host has the transport now.
+    localPlaying.store (false);
 
     // Keep our own count while the transport runs on, and take the host's word
     // only when it has really moved.
@@ -513,17 +523,22 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     if (range.isEmpty())
         return;
 
-    const auto sliceChannels = jmin ((int) audioTake->channels.size(), renderSlice.getNumChannels());
-    const auto last = range.getEnd() - takeStart;
+    playTake (buffer, range.getStart() - takeStart, range.getEnd() - takeStart,
+              (int) (range.getStart() - blockRange.getStart()));
+}
 
-    for (auto at = range.getStart() - takeStart; at < last;)
+void TransferSession::playTake (AudioBuffer<float>& buffer, int64 from, int64 last, int bufferStart) noexcept
+{
+    const auto sliceChannels = jmin ((int) audioTake->channels.size(), renderSlice.getNumChannels());
+
+    for (auto at = from; at < last;)
     {
         if (at < sliceStart || at >= sliceStart + sliceLength)
             fillRenderSlice (at);
 
         auto count = (int) (std::min (last, sliceStart + sliceLength) - at);
         const auto inSlice = (int) (at - sliceStart);
-        const auto inBuffer = (int) (at + takeStart - blockRange.getStart());
+        const auto inBuffer = bufferStart + (int) (at - from);
 
         if (fadeRemaining <= 0)
         {
@@ -563,6 +578,66 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     }
 }
 
+void TransferSession::playLocally (AudioBuffer<float>& buffer) noexcept
+{
+    if (const auto wanted = localSeek.exchange (-1); wanted >= 0)
+        localAt = wanted;
+
+    refreshAudioState (true, localAt);
+
+    if (audioTake == nullptr || ! approximatelyEqual (audioTake->sampleRate, sampleRate))
+    {
+        localPlaying.store (false);
+        return;
+    }
+
+    const auto length = audioTake->numSamples;
+    const auto loopStart = jlimit ((int64) 0, length, localLoopStart.load());
+    const auto loopEnd = jlimit (loopStart, length, localLoopEnd.load());
+    const auto looping = localLoop.load() && loopEnd - loopStart > 256;
+    const auto end = looping ? loopEnd : length;
+
+    const auto numSamples = buffer.getNumSamples();
+
+    for (int done = 0; done < numSamples;)
+    {
+        if (localAt < 0 || localAt >= end)
+        {
+            if (! looping)
+            {
+                // Played to the end: stop, and be ready to start over.
+                localAt = 0;
+                localPlaying.store (false);
+                break;
+            }
+
+            localAt = loopStart;
+        }
+
+        const auto count = (int) std::min ((int64) (numSamples - done), end - localAt);
+
+        playTake (buffer, localAt, localAt + count, done);
+
+        localAt += count;
+        done += count;
+    }
+
+    localPosition.store (localAt);
+}
+
+void TransferSession::startLocalPlayback (int64 fromTakeSample)
+{
+    localSeek.store (jmax ((int64) 0, fromTakeSample));
+    localPosition.store (jmax ((int64) 0, fromTakeSample));
+    localPlaying.store (true);
+}
+
+void TransferSession::setLocalLoop (bool on, int64 loopStart, int64 loopEnd) noexcept
+{
+    localLoopStart.store (loopStart);
+    localLoopEnd.store (loopEnd);
+    localLoop.store (on);
+}
 void TransferSession::collectForAlignment (const AudioBuffer<float>& buffer, int64 songTime) noexcept
 {
     if (alignBuffer.empty() || alignReady.load() || alignFailed.load())

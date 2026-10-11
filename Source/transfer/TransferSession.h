@@ -109,6 +109,19 @@ public:
     bool isPlaced() const noexcept                  { return placed.load(); }
     bool placingFailed() const noexcept             { return alignFailed.load(); }
 
+    //==============================================================================
+    /** Playback of the take from the plugin itself, while the host's transport
+        is stopped: the same corrected audio, from wherever is asked, without
+        having to find the passage and start it in the host. It ends by itself
+        the moment the host starts playing.
+
+        With a loop set, it goes round [loopStart, loopEnd) of the take. */
+    void startLocalPlayback (int64 fromTakeSample);
+    void stopLocalPlayback() noexcept               { localPlaying.store (false); }
+    bool isLocalPlaying() const noexcept            { return localPlaying.load(); }
+    int64 getLocalPosition() const noexcept         { return localPosition.load(); }
+    void setLocalLoop (bool on, int64 loopStart, int64 loopEnd) noexcept;
+
     State getState() const noexcept                 { return state.load(); }
     double getRecordedSeconds() const noexcept;
 
@@ -176,6 +189,11 @@ private:
                       bool takeIsPlaced);
 
     void collectForAlignment (const AudioBuffer<float>&, int64 songTime) noexcept;
+
+    /** Writes [from, to) of the corrected take into the buffer, starting at
+        `bufferStart`. Shared by the host's playback and the plugin's own. */
+    void playTake (AudioBuffer<float>&, int64 from, int64 to, int bufferStart) noexcept;
+    void playLocally (AudioBuffer<float>&) noexcept;
     void alignToTrack();
 
     std::shared_ptr<const MemoryBlock> encodedAudioFor (const TransferTake::Ptr&);
@@ -204,6 +222,10 @@ private:
     // which is never modified: an imported one is placed after the fact.
     std::atomic<int64> placement { 0 };
     std::atomic<bool>  placed { true };
+
+    std::atomic<bool>  localPlaying { false }, localLoop { false };
+    std::atomic<int64> localSeek { -1 }, localPosition { 0 }, localLoopStart { 0 }, localLoopEnd { 0 };
+    int64 localAt = 0;   // audio thread
 
     std::atomic<bool>  importing { false }, importError { false };
     File pendingImport;

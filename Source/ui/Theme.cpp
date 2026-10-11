@@ -323,4 +323,63 @@ void OniriqueLookAndFeel::drawLabel (Graphics& g, Label& label)
     g.drawText (label.getText(), bounds, Justification::centred, false);
 }
 
+//==============================================================================
+void TransportButton::paintButton (Graphics& g, bool highlighted, bool down)
+{
+    const auto bounds = getLocalBounds().toFloat().reduced (1.0f);
+    const auto side = jmin (bounds.getWidth(), bounds.getHeight());
+    const auto disc = Rectangle<float> (side, side).withCentre (bounds.getCentre());
+    const auto on = getToggleState();
+
+    if (on)
+    {
+        g.setColour (ember.withAlpha (0.2f));
+        g.drawEllipse (disc.expanded (1.5f), 3.0f);
+        g.setGradientFill (ColourGradient (Colour (0xff6e0f1a), 0.0f, disc.getY(),
+                                           Colour (0xff3a060c), 0.0f, disc.getBottom(), false));
+    }
+    else
+    {
+        g.setColour (down ? Colour (0x80000000) : Colour (0x59000000));
+    }
+
+    g.fillEllipse (disc);
+    g.setColour (on ? emberLit : (highlighted || down ? ember.withAlpha (0.7f) : Colour (0x33ffd2d6)));
+    g.drawEllipse (disc, on ? 1.6f : 1.0f);
+
+    const auto centre = disc.getCentre();
+    const auto r = side * 0.2f;
+
+    g.setColour ((on || highlighted ? Colours::white : mist).withAlpha (isEnabled() ? 1.0f : 0.4f));
+
+    if (kind == Kind::stop)
+    {
+        g.fillRoundedRectangle (Rectangle<float> (2.0f * r, 2.0f * r).withCentre (centre), 1.5f);
+    }
+    else if (kind == Kind::play)
+    {
+        Path p;
+        p.addTriangle (centre.x - r * 0.8f, centre.y - r * 1.15f,
+                       centre.x - r * 0.8f, centre.y + r * 1.15f,
+                       centre.x + r * 1.25f, centre.y);
+        g.fillPath (p);
+    }
+    else
+    {
+        // Most of a circle, with an arrowhead where it would close.
+        Path arc;
+        arc.addCentredArc (centre.x, centre.y, r * 1.15f, r * 1.15f, 0.0f,
+                           MathConstants<float>::pi * 0.35f, MathConstants<float>::pi * 2.1f, true);
+        g.strokePath (arc, PathStrokeType (1.7f, PathStrokeType::curved, PathStrokeType::rounded));
+
+        const auto tip = Point<float> (centre.x + r * 1.15f * std::sin (MathConstants<float>::pi * 0.35f),
+                                       centre.y - r * 1.15f * std::cos (MathConstants<float>::pi * 0.35f));
+        Path head;
+        head.addTriangle (tip.x - r * 0.75f, tip.y - r * 0.15f,
+                          tip.x + r * 0.25f, tip.y - r * 0.85f,
+                          tip.x + r * 0.35f, tip.y + r * 0.45f);
+        g.fillPath (head);
+    }
+}
+
 } // namespace onirique::theme

@@ -383,6 +383,55 @@ int main()
             check (lowest > 0.8, "nor does it duck while a knob is turned", d);
         }
 
+        // The plugin's own transport: with the host stopped, the same corrected
+        // audio from wherever it is asked for, going round when a loop is set.
+        {
+            auto stopped = [&] (int blocks)
+            {
+                std::vector<float> out;
+                juce::AudioBuffer<float> block (2, kMaxBlock);
+
+                for (int i = 0; i < blocks; ++i)
+                {
+                    block.clear();
+                    session.process (block, positionAt (kSongStart, false));
+                    out.insert (out.end(), block.getReadPointer (0), block.getReadPointer (0) + kMaxBlock);
+                }
+
+                return out;
+            };
+
+            const int64_t from = 20000;
+            session.setLocalLoop (false, 0, 0);
+            session.startLocalPlayback (from);
+            const auto local = stopped (40);
+
+            const std::vector<float> expectedLocal (corrected[0].begin() + from,
+                                                    corrected[0].begin() + from + (int64_t) local.size());
+
+            std::snprintf (d, sizeof d, "max error %.2g, now at %lld", maxDifference (local, expectedLocal),
+                           (long long) session.getLocalPosition());
+            check (maxDifference (local, expectedLocal) == 0.0 && session.isLocalPlaying()
+                       && session.getLocalPosition() == from + (int64_t) local.size(),
+                   "the plugin's own playback matches the host's", d);
+
+            session.setLocalLoop (true, 30000, 30000 + 3 * kMaxBlock);
+            session.startLocalPlayback (30000);
+            const auto round = stopped (7);
+
+            bool loops = true;
+
+            for (size_t i = 0; i < round.size(); ++i)
+                loops = loops && round[i] == corrected[0][(size_t) 30000 + i % (size_t) (3 * kMaxBlock)];
+
+            check (loops, "and goes round a loop", "");
+
+            // The host starting takes the transport back.
+            play (session, kSongStart, kSongStart + 2000, 0.0f);
+            check (! session.isLocalPlaying(), "the host playing ends it", "");
+            session.setLocalLoop (false, 0, 0);
+        }
+
         // Holding a note: with the transport stopped, that stretch of the take
         // is heard on top of whatever the track is doing, and only that.
         {

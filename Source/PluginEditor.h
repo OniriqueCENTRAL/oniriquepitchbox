@@ -60,6 +60,12 @@ private:
 
     void updatePlayhead();
     void updateAraStatus();
+
+    // The plugin's own transport, for a take it holds itself.
+    void playLocally();
+    void stopLocally();
+    void applyLoop();
+    void exportMidi();
     void paintHeader (Graphics&, Rectangle<int> header);
     int titleRight() const;
     void updateValueReadouts();
@@ -83,6 +89,15 @@ private:
     TextButton detectKeyButton { "DETECT KEY" };
     TextButton enabledButton { "CORRECTION" };
     TextButton transferButton { "TRANSFER" };
+
+    theme::TransportButton stopButton { theme::TransportButton::Kind::stop },
+                           playButton { theme::TransportButton::Kind::play },
+                           loopButton { theme::TransportButton::Kind::loop };
+    TextButton midiButton { "EXPORT MIDI" };
+    std::unique_ptr<FileChooser> fileChooser;
+
+    /** Where the plugin's own playback starts from next. */
+    int64 localStart = 0;
 
     bool transferMode = false;
     bool fileHovering = false;

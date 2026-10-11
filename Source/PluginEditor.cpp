@@ -30,6 +30,7 @@ namespace
     }
 
     constexpr int kHeaderHeight = 68;
+    constexpr int kToolbarHeight = 40;
     constexpr int kTitleLeft = 72;
 
     Font titleFont (bool heavy)
@@ -249,6 +250,30 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     updateHistoryButtons();
     selectionChanged();
 
+    stopButton.onClick = [this] { stopLocally(); };
+    playButton.onClick = [this] { playLocally(); };
+
+    loopButton.setClickingTogglesState (true);
+    loopButton.onClick = [this] { applyLoop(); };
+
+    stopButton.setTooltip ("Stop. Again: back to the start.");
+    playButton.setTooltip ("Play the take from here, without the host.");
+    loopButton.setTooltip ("Go round the selected notes, or the whole take.");
+
+    for (auto* b : std::initializer_list<Component*> { &stopButton, &playButton, &loopButton })
+        addChildComponent (b);
+
+    midiButton.onClick = [this] { exportMidi(); };
+    addAndMakeVisible (midiButton);
+
+    grid.onLocate = [this] (int64_t sample)
+    {
+        localStart = sample;
+
+        if (transferMode && processor.getTransfer().isLocalPlaying())
+            processor.getTransfer().startLocalPlayback (sample);
+    };
+
     transferButton.onClick = [this]
     {
         processor.getTransfer().toggleTransfer();
@@ -290,6 +315,10 @@ void PitchBoxEditor::refreshTarget()
         {
             transferMode = true;
             transferButton.setVisible (true);
+
+            for (auto* b : std::initializer_list<Component*> { &stopButton, &playButton, &loopButton })
+                b->setVisible (true);
+
             resized();
         }
 
@@ -301,6 +330,9 @@ void PitchBoxEditor::refreshTarget()
     {
         transferMode = false;
         transferButton.setVisible (false);
+
+        for (auto* b : std::initializer_list<Component*> { &stopButton, &playButton, &loopButton })
+            b->setVisible (false);
         shownAnalysis = nullptr;
         resized();
     }
@@ -694,6 +726,121 @@ void PitchBoxEditor::updateValueReadouts()
     modulationValue.setText (percent (modulationSlider.getValue()), dontSendNotification);
 }
 
+void PitchBoxEditor::playLocally()
+{
+    auto& session = processor.getTransfer();
+
+    if (session.getAnalysis() == nullptr)
+        return;
+
+    // From the first selected note when there is a selection, otherwise from
+    // wherever the last click or the last stop left it.
+    const auto selection = grid.getSelection();
+
+    if (! selection.empty() && (size_t) selection.front() < edits.notes.size())
+        localStart = edits.notes[(size_t) selection.front()].startSample;
+
+    applyLoop();
+    session.startLocalPlayback (localStart);
+}
+
+void PitchBoxEditor::stopLocally()
+{
+    auto& session = processor.getTransfer();
+
+    // Stopping keeps the place; stopping again goes back to the start.
+    if (session.isLocalPlaying())
+    {
+        localStart = session.getLocalPosition();
+        session.stopLocalPlayback();
+    }
+    else
+    {
+        localStart = 0;
+    }
+}
+
+void PitchBoxEditor::applyLoop()
+{
+    auto& session = processor.getTransfer();
+    const auto analysis = session.getAnalysis();
+
+    if (analysis == nullptr)
+        return;
+
+    int64 from = 0, to = analysis->numSamples;
+    const auto selection = grid.getSelection();
+
+    if (! selection.empty())
+    {
+        from = to;
+        to = 0;
+
+        for (const auto index : selection)
+        {
+            if ((size_t) index >= edits.notes.size())
+                continue;
+
+            from = jmin (from, (int64) edits.notes[(size_t) index].startSample);
+            to = jmax (to, (int64) edits.notes[(size_t) index].endSample);
+        }
+    }
+
+    session.setLocalLoop (loopButton.getToggleState(), from, to);
+}
+
+void PitchBoxEditor::exportMidi()
+{
+    const auto analysis = currentAnalysis();
+
+    if (analysis == nullptr || edits.notes.empty())
+        return;
+
+    // The notes as they will sound, each on the nearest key. Seconds become
+    // ticks at 120 beats a minute, which every sequencer reads the same way.
+    constexpr int ticksPerBeat = 960;
+    const auto ticksPerSecond = 2.0 * ticksPerBeat;
+
+    MidiMessageSequence sequence;
+    sequence.addEvent (MidiMessage::tempoMetaEvent (500000));
+
+    for (const auto& n : edits.notes)
+    {
+        const auto key = jlimit (0, 127, roundToInt (n.resultCents() / 100.0f));
+        const auto on = (double) n.startSample / analysis->sampleRate * ticksPerSecond;
+        const auto off = (double) n.endSample / analysis->sampleRate * ticksPerSecond;
+
+        sequence.addEvent (MidiMessage::noteOn (1, key, (uint8) 100), on);
+        sequence.addEvent (MidiMessage::noteOff (1, key), jmax (on + 1.0, off));
+    }
+
+    sequence.updateMatchedPairs();
+
+    MidiFile midi;
+    midi.setTicksPerQuarterNote (ticksPerBeat);
+    midi.addTrack (sequence);
+
+    fileChooser = std::make_unique<FileChooser> ("Export the notes as MIDI",
+                                                 File::getSpecialLocation (File::userDesktopDirectory)
+                                                     .getChildFile ("PitchBox notes.mid"),
+                                                 "*.mid");
+
+    fileChooser->launchAsync (FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles
+                                  | FileBrowserComponent::warnAboutOverwriting,
+                              [midi] (const FileChooser& chooser)
+                              {
+                                  const auto file = chooser.getResult();
+
+                                  if (file == File())
+                                      return;
+
+                                  file.deleteFile();
+
+                                  if (auto stream = file.withFileExtension ("mid").createOutputStream())
+                                      midi.writeTo (*stream);
+                              });
+}
+
 void PitchBoxEditor::updateAraStatus()
 {
     using Report = AraPlaybackReport;
@@ -752,12 +899,28 @@ void PitchBoxEditor::updatePlayhead()
 
     if (transferMode)
     {
+        auto& session = processor.getTransfer();
+        const auto local = session.isLocalPlaying();
         int64 start = 0;
 
-        if (processor.getTransfer().getTakeStartInSong (start))
+        playButton.setToggleState (local, dontSendNotification);
+
+        if (local)
+        {
+            grid.setPlayhead (session.getLocalPosition(), true, true);
+            return;
+        }
+
+        if (playing && session.getTakeStartInSong (start))
         {
             inTake = song - start;
             visible = true;
+        }
+        else
+        {
+            // Stopped: show where the plugin's own playback would start.
+            inTake = localStart;
+            visible = session.getAnalysis() != nullptr;
         }
     }
     else if (currentModification != nullptr)
@@ -935,6 +1098,13 @@ void PitchBoxEditor::paint (Graphics& g)
     g.fillRect (side);
     g.setColour (line);
     g.drawVerticalLine (side.getRight(), (float) side.getY(), (float) side.getBottom());
+
+    // The strip of tools above the grid.
+    const auto tools = getLocalBounds().withTop (kHeaderHeight).withTrimmedLeft (179).removeFromTop (kToolbarHeight);
+    g.setColour (deep.withAlpha (0.7f));
+    g.fillRect (tools);
+    g.setColour (line);
+    g.drawHorizontalLine (tools.getBottom() - 1, (float) tools.getX(), (float) tools.getRight());
 }
 void PitchBoxEditor::paintOverChildren (Graphics& g)
 {
@@ -1030,6 +1200,21 @@ void PitchBoxEditor::resized()
     knob (transitionSlider, transitionLabel, transitionValue);
     knob (formantSlider, formantLabel, formantValue);
     knob (modulationSlider, modulationLabel, modulationValue);
+    auto tools = bounds.removeFromTop (kToolbarHeight).reduced (10, 5);
+
+    if (transferMode)
+    {
+        for (auto* b : std::initializer_list<Component*> { &stopButton, &playButton, &loopButton })
+        {
+            b->setBounds (tools.removeFromLeft (tools.getHeight()));
+            tools.removeFromLeft (6);
+        }
+
+        tools.removeFromLeft (8);
+    }
+
+    midiButton.setBounds (tools.removeFromLeft (126));
+
     grid.setBounds (bounds);
 }
 

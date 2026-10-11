@@ -240,6 +240,11 @@ complet hors ligne. Les deux qui comptent le plus :
   zooms se font sur le curseur.
 - **Barres de défilement** en bas et à droite, et **glisser au clic droit ou
   molette** pour déplacer la vue dans les deux sens.
+- **Stop / lecture / boucle** au-dessus de la grille (mode Transfer) : rejoue la
+  prise corrigée depuis le plugin, hôte arrêté. Un clic dans le vide place le
+  point de départ ; la boucle tourne sur les notes sélectionnées, ou sur toute
+  la prise. Stop une fois garde la position, deux fois revient au début.
+- **EXPORT MIDI** : les notes telles qu'elles sonneront, dans un fichier .mid.
 - **AMOUNT** : force de la correction sur les notes non touchées à la main.
 - **SPEED** : durée de la transition en début et fin de note. 0 donne le snap
   dur et audible ; 40–80 ms sonne comme un chanteur qui trouve sa note.

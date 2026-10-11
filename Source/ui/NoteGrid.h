@@ -40,6 +40,9 @@ public:
 
     std::function<void()> onSelectionChanged;
 
+    /** A click on empty grid, not a drag: where in the take it was. */
+    std::function<void (int64_t)> onLocate;
+
     /** Indices into the edit state's notes. Clicking a note selects it, Ctrl
         or Shift adds to the selection, and dragging over empty grid draws a
         box around several; whatever is done to one selected note is done to

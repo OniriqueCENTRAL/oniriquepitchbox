@@ -692,8 +692,12 @@ void NoteGrid::mouseDrag (const MouseEvent& e)
     repaint();
 }
 
-void NoteGrid::mouseUp (const MouseEvent&)
+void NoteGrid::mouseUp (const MouseEvent& e)
 {
+    // A box that never opened was a click: it says where to play from.
+    if (lassoing && e.getDistanceFromDragStart() < 4 && analysis != nullptr && onLocate)
+        onLocate (jlimit ((int64_t) 0, analysis->numSamples, xToTime (e.position.x)));
+
     if (draggingNote >= 0 && onAudition)
         onAudition (-1, 0);
 

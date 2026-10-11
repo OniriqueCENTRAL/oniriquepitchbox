@@ -88,4 +88,18 @@ public:
     void drawLabel (juce::Graphics&, juce::Label&) override;
 };
 
+/** The round buttons of the plugin's own transport: stop, play, loop. */
+class TransportButton final : public juce::Button
+{
+public:
+    enum class Kind { stop, play, loop };
+
+    explicit TransportButton (Kind k) : juce::Button ({}), kind (k) {}
+
+    void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+
+private:
+    Kind kind;
+};
+
 } // namespace onirique::theme
