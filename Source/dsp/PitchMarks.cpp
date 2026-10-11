@@ -164,8 +164,30 @@ PitchMarkSet detectPitchMarks (const float* samples,
         return std::max (8.0f, periodCurve[(size_t) i]);
     };
 
-    // Peak of |lp| inside [lo, hi), preferring the signed maximum so every mark
-    // sits on the same side of the waveform.
+    // Which way this voice's pulses point. Each closing of the vocal folds is
+    // one sharp excursion to one side, and which side depends on the
+    // microphone and on everything the signal has been through since. A grain
+    // has to be centred on that excursion: centred on the other side of the
+    // wave, it is cut in two where its energy is, and the halves cancel
+    // against their neighbours wherever the pitch is being changed.
+    double upward = 0.0, downward = 0.0;
+
+    for (int64_t i = 0; i < numSamples; ++i)
+    {
+        if (voicedMask[(size_t) i] == 0)
+            continue;
+
+        const auto v = (double) samples[i];
+        (v > 0.0 ? upward : downward) += std::abs (v * v * v);
+    }
+
+    const float polarity = downward > upward ? -1.0f : 1.0f;
+
+    for (auto& v : lp)
+        v *= polarity;
+
+    // The strongest excursion on that side inside [lo, hi), so that every mark
+    // sits at the same point of the cycle.
     auto peakIn = [&] (int64_t lo, int64_t hi) -> int64_t
     {
         lo = std::max<int64_t> (0, lo);

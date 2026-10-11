@@ -322,6 +322,113 @@ void reportAddedEvents (const char* label, const std::vector<float>& x, const st
     std::printf ("  sharp events added, %s: %d (%d by a pause edge, %d by a note boundary)\n",
                  label, added, atEdges, atNotes);
 }
+/** How much of the voice survives the rendering: its level against the
+    recording's, and how sharp its cycles still are (peak over average), both
+    over the voiced audio only. Grains cut in the wrong place cancel part of
+    one another where they overlap, and the voice comes out quieter and duller. */
+void reportBody (const char* label, const std::vector<float>& x, const std::vector<float>& reference,
+                 const Analysis& analysis)
+{
+    double mine = 0.0, theirs = 0.0, minePeak = 0.0, theirsPeak = 0.0;
+    int64_t count = 0;
+    const auto half = (int64_t) analysis.track.hopSize / 2;
+
+    for (const auto& frame : analysis.track.frames)
+    {
+        if (! frame.voiced)
+            continue;
+
+        double a = 0.0, b = 0.0, ap = 0.0, bp = 0.0;
+
+        for (auto i = std::max<int64_t> (0, frame.sampleIndex - half);
+             i < std::min<int64_t> ((int64_t) x.size(), frame.sampleIndex + half); ++i)
+        {
+            a += (double) x[(size_t) i] * x[(size_t) i];
+            b += (double) reference[(size_t) i] * reference[(size_t) i];
+            ap = std::max (ap, (double) std::abs (x[(size_t) i]));
+            bp = std::max (bp, (double) std::abs (reference[(size_t) i]));
+        }
+
+        mine += a;
+        theirs += b;
+        minePeak += ap;
+        theirsPeak += bp;
+        ++count;
+    }
+
+    if (count == 0 || theirs <= 0.0)
+        return;
+
+    std::printf ("  body kept, %s: level %+.1f dB, peaks %+.1f dB against the recording\n", label,
+                 10.0 * std::log10 (mine / theirs), 20.0 * std::log10 (minePeak / theirsPeak));
+}
+/** Moments where the rendering drops well below the recording while the
+    recording is loud: the voice briefly cancelling itself. Anywhere in the
+    take, with what each is next to. */
+void reportDucks (const char* label, const std::vector<float>& x, const std::vector<float>& reference,
+                  const Analysis& analysis)
+{
+    const auto rate = analysis.sampleRate;
+    // Three cycles of a low voice: any shorter and the level being followed
+    // rises and falls with where the cycles happen to land in the window.
+    const auto win = (int64_t) (0.025 * rate);
+    const auto n = (int64_t) x.size();
+    double peak = 0.0;
+
+    for (const auto s : reference)
+        peak = std::max (peak, (double) std::abs (s));
+
+    auto level = [win] (const std::vector<float>& y, int64_t from)
+    {
+        double sum = 0.0;
+
+        for (auto i = from; i < from + win; ++i)
+            sum += (double) y[(size_t) i] * y[(size_t) i];
+
+        return std::sqrt (sum / (double) win);
+    };
+
+    int ducks = 0, shown = 0;
+    double deepest = 0.0;
+    int64_t lastDuck = -100000;
+
+    for (int64_t at = 0; at + win < n; at += win / 4)
+    {
+        const auto original = level (reference, at);
+
+        if (original < 0.05 * peak)
+            continue;
+
+        const auto db = 20.0 * std::log10 ((level (x, at) + 1.0e-12) / original);
+        deepest = std::min (deepest, db);
+
+        if (db > -3.0 || at - lastDuck < (int64_t) (0.05 * rate))
+            continue;
+
+        lastDuck = at;
+        ++ducks;
+
+        int64_t toNote = 1 << 30, toPause = 1 << 30;
+
+        for (const auto& note : analysis.notes)
+        {
+            if (std::abs (at - note.startSample) < std::abs (toNote)) toNote = at - note.startSample;
+            if (std::abs (at - note.endSample) < std::abs (toNote))   toNote = at - note.endSample;
+        }
+
+        for (const auto& p : analysis.marks.pauses)
+        {
+            if (std::abs (at - p.begin) < std::abs (toPause)) toPause = at - p.begin;
+            if (std::abs (at - p.end) < std::abs (toPause))   toPause = at - p.end;
+        }
+
+        if (shown++ < 8)
+            std::printf ("      %s  %.3f s  %.1f dB   %+.0f ms from a note boundary, %+.0f ms from a pause edge\n",
+                         label, (double) at / rate, db, 1000.0 * (double) toNote / rate, 1000.0 * (double) toPause / rate);
+    }
+
+    std::printf ("  ducks below -3 dB, %s: %d, deepest %.1f dB\n", label, ducks, deepest);
+}
 double worstDifference (const std::vector<float>& a, const std::vector<float>& b, int64_t from)
 {
     double worst = 0.0;
@@ -517,6 +624,8 @@ int main (int argc, char** argv)
         reportQuietClicks ("semitone", out, mono, *analysis);
         reportEdgeSags ("semitone", out, mono, *analysis);
         reportAddedEvents ("semitone", out, mono, *analysis);
+        reportBody ("semitone", out, mono, *analysis);
+        reportDucks ("semitone", out, mono, *analysis);
 
         // The same audio whatever the host does: other block sizes, each block
         // asked for twice, and playback started part of the way through.
@@ -554,6 +663,8 @@ int main (int argc, char** argv)
         reportQuietClicks ("moved", out, mono, *analysis);
         reportEdgeSags ("moved", out, mono, *analysis);
         reportAddedEvents ("moved", out, mono, *analysis);
+        reportBody ("moved", out, mono, *analysis);
+        reportDucks ("moved", out, mono, *analysis);
     }
     // A group of notes turned down, nothing else touched. Within a phrase the
     // level should then sit 12 dB down throughout; anywhere it jumps back up
@@ -634,6 +745,8 @@ int main (int argc, char** argv)
         reportQuietClicks ("amount", out, mono, *analysis);
         reportEdgeSags ("amount", out, mono, *analysis);
         reportAddedEvents ("amount", out, mono, *analysis);
+        reportBody ("amount", out, mono, *analysis);
+        reportDucks ("amount", out, mono, *analysis);
         std::printf ("  irregular cycles, amount at full     : %5.2f %%   broken: %5.3f %%\n",
                      100.0 * irregularCycles (out, *analysis, 1.0), 100.0 * irregularCycles (out, *analysis, 1.0, 0.2));
     }
