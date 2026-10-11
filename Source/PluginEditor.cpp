@@ -310,32 +310,32 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
 
     // What each control is, for the pointer that rests on it. The name and the
     // readout of a knob are part of the knob.
-    describe ({ &rootBox }, "Key: the note the scale is built on.");
-    describe ({ &scaleBox }, "Scale: which notes the correction pulls towards.");
-    describe ({ &detectKeyButton }, "Detect key: set the key and scale to the ones found in the take.");
+    describe ({ &rootBox }, "Tonalité : la note sur laquelle la gamme est construite.");
+    describe ({ &scaleBox }, "Gamme : les notes vers lesquelles la correction attire la voix.");
+    describe ({ &detectKeyButton }, "Détecter : règle la tonalité et la gamme sur celles trouvées dans la prise.");
     describe ({ &amountSlider, &amountLabel, &amountValue },
-              "Amount: how far every untouched note is pulled onto the scale. Double-click to reset.");
+              "Amount : à quel point les notes non retouchées sont ramenées sur la gamme. Double-clic pour remettre à zéro.");
     describe ({ &transitionSlider, &transitionLabel, &transitionValue },
-              "Speed: how long the pitch takes to glide from one note to the next. 0 is a hard jump.");
+              "Speed : le temps que met la hauteur à glisser d'une note à la suivante. À 0, le saut est franc.");
     describe ({ &formantSlider, &formantLabel, &formantValue },
-              "Formant: shifts the colour of the voice without changing its pitch.");
+              "Formant : change la couleur de la voix sans toucher à sa hauteur.");
     describe ({ &modulationSlider, &modulationLabel, &modulationValue },
-              "Modulation: how much of the vibrato and drift inside the selected notes is kept. 0 flattens them.");
+              "Modulation : ce qu'on garde du vibrato et des dérives dans les notes sélectionnées. À 0, elles sont aplaties.");
     describe ({ &volumeSlider, &volumeLabel, &volumeValue },
-              "Volume of the selected notes, in dB. Double-click to reset.");
-    describe ({ &undoButton }, "Undo the last edit.");
-    describe ({ &redoButton }, "Redo the edit that was undone.");
+              "Volume des notes sélectionnées, en dB. Double-clic pour remettre à zéro.");
+    describe ({ &undoButton }, "Annuler la dernière modification.");
+    describe ({ &redoButton }, "Rétablir la modification annulée.");
     describe ({ &resetButton },
-              "Reset: drop every hand edit and go back to the analysed notes. The key and knobs are kept.");
+              "Reset : efface toutes les retouches faites à la main et revient aux notes analysées. La tonalité et les potards sont conservés.");
     describe ({ &transferButton },
-              "Transfer: arm, then play the passage in the host to record it into the plugin.");
-    describe ({ &enabledButton }, "Correction on or off. Off plays the take as it was recorded.");
-    describe ({ &stopButton }, "Stop. Pressed again: back to the start.");
-    describe ({ &playButton }, "Play the take from here, without the host.");
-    describe ({ &loopButton }, "Loop: go round the selected notes, or the whole take.");
-    describe ({ &midiButton }, "Export MIDI: save the notes, as they will sound, to a MIDI file.");
-    describe ({ &inspector }, "The selected note: what was sung, how far off it was, where it is going, how long it lasts.");
-
+              "Transfer : arme l'enregistrement, puis lance la lecture du passage dans le DAW pour le faire entrer dans le plugin.");
+    describe ({ &enabledButton }, "Correction activée ou non. Désactivée, la prise est jouée telle qu'enregistrée.");
+    describe ({ &stopButton }, "Stop. Une seconde fois : retour au début.");
+    describe ({ &playButton }, "Lire la prise depuis ce point, sans passer par le DAW.");
+    describe ({ &loopButton }, "Boucle : tourne sur les notes sélectionnées, ou sur toute la prise.");
+    describe ({ &midiButton }, "Export MIDI : enregistre les notes, telles qu'elles sonneront, dans un fichier MIDI.");
+    describe ({ &inspector },
+              "La note sélectionnée : ce qui a été chanté, son écart en cents, sa destination et sa durée.");
     hoverTip.setInterceptsMouseClicks (false, false);
     hoverTip.setAlwaysOnTop (true);
     addChildComponent (hoverTip);
@@ -593,8 +593,10 @@ void PitchBoxEditor::selectionChanged()
     updateInspector();
 }
 
-void PitchBoxEditor::describe (std::initializer_list<Component*> components, const String& text)
+void PitchBoxEditor::describe (std::initializer_list<Component*> components, const char* utf8Text)
 {
+    const auto text = String::fromUTF8 (utf8Text);
+
     for (auto* c : components)
         described.push_back ({ c, text });
 }
@@ -616,8 +618,9 @@ void PitchBoxEditor::updateHoverTip()
             if (d.component->isVisible() && d.component->getBounds().contains (at))
                 over = &d;
 
-    // Any movement starts the wait again, and takes the description away.
-    if (over != resting || at.getDistanceFrom (restingAt) > 3)
+    // Onto another control, or off them all: the description goes, and the
+    // wait starts again.
+    if (over != resting)
     {
         resting = over;
         restingAt = at;
@@ -626,7 +629,20 @@ void PitchBoxEditor::updateHoverTip()
         return;
     }
 
-    if (resting == nullptr || hoverTip.isVisible() || now - restingSince < 2000)
+    // Once it is up it stays up for as long as the pointer is on that control,
+    // wherever on it the pointer goes.
+    if (resting == nullptr || hoverTip.isVisible())
+        return;
+
+    // Until then, the pointer has to rest: moving it starts the wait again.
+    if (at.getDistanceFrom (restingAt) > 3)
+    {
+        restingAt = at;
+        restingSince = now;
+        return;
+    }
+
+    if (now - restingSince < 2000)
         return;
 
     hoverTip.text = resting->text;

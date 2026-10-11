@@ -105,6 +105,13 @@ target_sources(OniriquePitchBox PRIVATE
     Source/ui/NoteGrid.cpp
     Source/ui/Theme.cpp)
 
+# The descriptions shown in the editor are written in French, accents and all.
+# MSVC has to be told the sources are UTF-8, or it reads them in the system's
+# code page and the accents come out as something else.
+if(MSVC)
+    target_compile_options(OniriquePitchBox PRIVATE /utf-8)
+endif()
+
 target_compile_definitions(OniriquePitchBox PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0

@@ -105,9 +105,10 @@ private:
     //==============================================================================
     /** The description of whatever the pointer is resting on.
 
-        Shown only once the pointer has been still on a control for two full
-        seconds, and gone the moment it moves: the stock tooltip window shows
-        the next one at once after the first, which is not what was wanted.
+        Shown once the pointer has been still on a control for two full
+        seconds, and then left up for as long as the pointer stays on that
+        control, moving or not. The stock tooltip window does neither: it shows
+        the next one at once after the first, and drops it on any movement.
         A control here can be several components — a knob, its name and its
         readout all say the same thing. */
     struct HoverTip final : Component
@@ -126,7 +127,7 @@ private:
         String text;
     };
 
-    void describe (std::initializer_list<Component*>, const String& text);
+    void describe (std::initializer_list<Component*>, const char* utf8Text);
     void updateHoverTip();
 
     std::vector<Described> described;
