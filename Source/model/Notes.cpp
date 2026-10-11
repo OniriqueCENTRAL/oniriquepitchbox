@@ -411,45 +411,113 @@ float pitchRatioAt (const PitchTrack& track,
     return ratioFromCents (cents);
 }
 //==============================================================================
+namespace
+{
+    /** The level change at one sample, in dB.
+
+        Like the pitch shift, it belongs to the phrase and not just to the
+        sounding part of each note: between two notes of a phrase it glides
+        from one note's level to the next, through whatever lies between them.
+        Letting it fall back to nothing there, as it once did, leaves every
+        join and every consonant at full volume in the middle of a passage
+        that was turned down, which is heard as a burst each time. At the two
+        ends of a phrase it eases off just outside the note. */
+    float gainDbAt (const std::vector<Note>& notes, double ramp, int64_t legatoGap, int64_t s) noexcept
+    {
+        auto middle = [] (const Note& n) { return (double) (n.startSample + n.endSample) * 0.5; };
+
+        auto glide = [&] (const Note& from, const Note& to, float& db)
+        {
+            if (to.startSample - from.endSample > legatoGap)
+                return false;
+
+            const auto begins = std::max ((double) from.endSample - ramp, middle (from));
+            const auto ends   = std::min ((double) to.startSample + ramp, middle (to));
+
+            if ((double) s < begins || (double) s >= ends || ends <= begins)
+                return false;
+
+            const auto u = (float) smoothStep (((double) s - begins) / (ends - begins));
+            db = from.gainDb + u * (to.gainDb - from.gainDb);
+            return true;
+        };
+
+        const auto count = (int) notes.size();
+        const auto idx = noteAtSample (notes, s);
+
+        if (idx >= 0)
+        {
+            const auto& n = notes[(size_t) idx];
+            auto db = n.gainDb;
+
+            if (idx > 0)
+                glide (notes[(size_t) idx - 1], n, db);
+
+            if (idx + 1 < count)
+                glide (n, notes[(size_t) idx + 1], db);
+
+            return db;
+        }
+
+        // Outside every note: between two of them, or off the end of a phrase.
+        int next = 0;
+
+        while (next < count && notes[(size_t) next].startSample <= s)
+            ++next;
+
+        float db = 0.0f;
+
+        if (next > 0 && next < count && glide (notes[(size_t) next - 1], notes[(size_t) next], db))
+            return db;
+
+        if (next > 0)
+        {
+            const auto& before = notes[(size_t) next - 1];
+            db = before.gainDb * (float) (1.0 - smoothStep ((double) (s - before.endSample) / ramp));
+        }
+
+        if (next < count)
+        {
+            const auto& after = notes[(size_t) next];
+            const auto towards = after.gainDb * (float) (1.0 - smoothStep ((double) (after.startSample - s) / ramp));
+
+            if (std::abs (towards) > std::abs (db))
+                db = towards;
+        }
+
+        return db;
+    }
+}
+
 void buildGainCurve (const std::vector<Note>& notes,
                      const CorrectionSettings& settings,
                      int64_t first,
                      int64_t count,
-                     float* gainOut)
+                     float* gainOut,
+                     double sampleRate)
 {
     std::fill (gainOut, gainOut + count, 1.0f);
 
     if (! settings.enabled)
         return;
 
-    int idx = 0;
+    // Nearly always nothing has been turned up or down, and there is no curve
+    // to build.
+    const auto anyChange = std::any_of (notes.begin(), notes.end(),
+                                        [] (const Note& n) { return std::abs (n.gainDb) >= 1.0e-4f; });
 
-    while (idx < (int) notes.size() && notes[(size_t) idx].endSample <= first)
-        ++idx;
+    if (! anyChange)
+        return;
 
-    for (; idx < (int) notes.size(); ++idx)
+    const auto ramp = std::max (1.0, 0.012 * sampleRate);
+    const auto legatoGap = (int64_t) (kLegatoGapSeconds * sampleRate);
+
+    for (int64_t i = 0; i < count; ++i)
     {
-        const auto& n = notes[(size_t) idx];
+        const auto db = gainDbAt (notes, ramp, legatoGap, first + i);
 
-        if (n.startSample >= first + count)
-            break;
-
-        if (std::abs (n.gainDb) < 1.0e-4f)
-            continue;
-
-        const auto g    = (float) std::pow (10.0, n.gainDb / 20.0);
-        const auto from = std::max (n.startSample, first);
-        const auto to   = std::min (n.endSample, first + count);
-        // 5 ms of ramp at each edge so a lifted note does not click in.
-        const auto ramp = std::max<int64_t> (1, n.lengthSamples() / 20);
-
-        for (auto s = from; s < to; ++s)
-        {
-            const auto d = std::min (s - n.startSample, n.endSample - 1 - s);
-            const auto env = smoothStep ((double) d / (double) ramp);
-            gainOut[s - first] = 1.0f + (g - 1.0f) * (float) env;
-        }
+        if (std::abs (db) >= 1.0e-4f)
+            gainOut[i] = (float) std::pow (10.0, (double) db / 20.0);
     }
 }
-
 } // namespace pb

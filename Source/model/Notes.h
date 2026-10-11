@@ -128,7 +128,8 @@ void buildGainCurve (const std::vector<Note>& notes,
                      const CorrectionSettings& settings,
                      int64_t first,
                      int64_t count,
-                     float* gainOut);
+                     float* gainOut,
+                     double sampleRate = 48000.0);
 
 /** Index of the note containing the sample, or -1. Notes are sorted and
     non-overlapping, so this is a binary search. */

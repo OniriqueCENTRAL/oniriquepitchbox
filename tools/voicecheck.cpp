@@ -555,6 +555,73 @@ int main (int argc, char** argv)
         reportEdgeSags ("moved", out, mono, *analysis);
         reportAddedEvents ("moved", out, mono, *analysis);
     }
+    // A group of notes turned down, nothing else touched. Within a phrase the
+    // level should then sit 12 dB down throughout; anywhere it jumps back up
+    // between two of the notes is a burst at full volume.
+    {
+        EditState edits;
+        edits.adoptAnalysis (*analysis);
+
+        for (size_t i = 0; i < edits.notes.size(); ++i)
+        {
+            edits.notes[i].gainDb = -12.0f;
+            edits.touched[i] = true;
+        }
+
+        edits.bump();
+
+        const auto out = renderAll (analysis, mono, edits);
+        writeWav (outDir.getChildFile ("5 notes turned down.wav"), out, rate);
+
+        const auto win = (int64_t) (0.012 * rate);
+        const auto legato = (int64_t) (0.1 * rate);
+        double peak = 0.0;
+
+        for (const auto s : mono)
+            peak = std::max (peak, (double) std::abs (s));
+
+        auto level = [win] (const std::vector<float>& y, int64_t from)
+        {
+            double sum = 0.0;
+
+            for (auto i = from; i < from + win; ++i)
+                sum += (double) y[(size_t) i] * y[(size_t) i];
+
+            return std::sqrt (sum / (double) win);
+        };
+
+        int joins = 0, bursts = 0;
+        double loudest = 0.0;
+
+        for (size_t i = 0; i + 1 < edits.notes.size(); ++i)
+        {
+            const auto& a = edits.notes[i];
+            const auto& b = edits.notes[i + 1];
+
+            if (b.startSample - a.endSample > legato)
+                continue;
+
+            ++joins;
+            double worst = 0.0;
+
+            for (auto at = a.endSample - win; at < b.startSample; at += win / 4)
+            {
+                if (at < 0 || at + win >= (int64_t) out.size())
+                    continue;
+
+                const auto original = level (mono, at);
+
+                if (original > 0.03 * peak)
+                    worst = std::max (worst, level (out, at) / original);
+            }
+
+            loudest = std::max (loudest, worst);
+            bursts += worst > 0.5 ? 1 : 0;
+        }
+
+        std::printf ("  notes turned down 12 dB: %d of %d joins burst back above -6 dB, loudest %.1f dB\n",
+                     bursts, joins, 20.0 * std::log10 (loudest + 1.0e-9));
+    }
     // And what the AMOUNT knob does at full: every note onto the nearest semitone.
     {
         EditState edits;

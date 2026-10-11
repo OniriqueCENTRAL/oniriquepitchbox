@@ -102,10 +102,38 @@ private:
     Slider volumeSlider;
     Label volumeLabel, volumeValue, inspector;
 
-    /** Shows a control's description once the pointer has rested on it for two
-        seconds. Parented to the editor: a plugin has no business opening
-        windows of its own on the desktop for this. */
-    TooltipWindow tooltips { this, 2000 };
+    //==============================================================================
+    /** The description of whatever the pointer is resting on.
+
+        Shown only once the pointer has been still on a control for two full
+        seconds, and gone the moment it moves: the stock tooltip window shows
+        the next one at once after the first, which is not what was wanted.
+        A control here can be several components — a knob, its name and its
+        readout all say the same thing. */
+    struct HoverTip final : Component
+    {
+        void paint (Graphics& g) override
+        {
+            getLookAndFeel().drawTooltip (g, text, getWidth(), getHeight());
+        }
+
+        String text;
+    };
+
+    struct Described
+    {
+        Component* component;
+        String text;
+    };
+
+    void describe (std::initializer_list<Component*>, const String& text);
+    void updateHoverTip();
+
+    std::vector<Described> described;
+    HoverTip hoverTip;
+    const Described* resting = nullptr;
+    Point<int> restingAt;
+    uint32 restingSince = 0;
 
     /** Where the plugin's own playback starts from next. */
     int64 localStart = 0;

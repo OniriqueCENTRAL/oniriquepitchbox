@@ -153,7 +153,7 @@ void RegionRenderer::render (const float* src,
 
     psolaRender (r, scratch);
 
-    buildGainCurve (edits.notes, edits.settings, firstSample, count, gainCurve.data());
+    buildGainCurve (edits.notes, edits.settings, firstSample, count, gainCurve.data(), rate);
 
     for (int64_t i = 0; i < count; ++i)
         dst[firstSample + i - dstOffset] = renderBuffer[(size_t) i] * gainCurve[(size_t) i];

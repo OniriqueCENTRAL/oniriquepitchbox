@@ -240,6 +240,30 @@ int main (int argc, char** argv)
 
     const juce::ScopedJuceInitialiser_GUI gui;
 
+    if (juce::String (argv[1]) == "--tip" && argc > 2)
+    {
+        // A description as it appears over the editor.
+        onirique::theme::OniriqueLookAndFeel look;
+        const juce::String text ("Speed: how long the pitch takes to glide from one note to the next. 0 is a hard jump.");
+        const auto bounds = look.getTooltipBounds (text, { 60, 40 }, { 0, 0, 420, 160 });
+
+        juce::Image image (juce::Image::RGB, 420, 160, true);
+
+        {
+            juce::Graphics g (image);
+            g.fillAll (onirique::theme::night);
+            g.setOrigin (bounds.getPosition());
+            look.drawTooltip (g, text, bounds.getWidth(), bounds.getHeight());
+        }
+
+        const auto file = juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[2]));
+        file.deleteFile();
+
+        if (auto stream = file.createOutputStream())
+            return juce::PNGImageFormat().writeImageToStream (image, *stream) ? 0 : 1;
+
+        return 1;
+    }
     if (juce::String (argv[1]) == "--menu")
         return argc > 2 && writeMenu (juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[2]))) ? 0 : 1;
 

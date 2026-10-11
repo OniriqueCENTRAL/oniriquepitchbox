@@ -256,9 +256,6 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     loopButton.setClickingTogglesState (true);
     loopButton.onClick = [this] { applyLoop(); };
 
-    stopButton.setTooltip ("Stop. Again: back to the start.");
-    playButton.setTooltip ("Play the take from here, without the host.");
-    loopButton.setTooltip ("Go round the selected notes, or the whole take.");
 
     for (auto* b : std::initializer_list<Component*> { &stopButton, &playButton, &loopButton })
         addChildComponent (b);
@@ -311,30 +308,37 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     inspector.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (inspector);
 
-    // What each control is, for the pointer that rests on it.
-    rootBox.setTooltip ("Key: the note the scale is built on.");
-    scaleBox.setTooltip ("Scale: which notes the correction pulls towards.");
-    detectKeyButton.setTooltip ("Set the key and scale to the ones found in the take.");
-    amountSlider.setTooltip ("Amount: how far every untouched note is pulled onto the scale. Double-click to reset.");
-    transitionSlider.setTooltip ("Speed: how long the pitch takes to glide from one note to the next. 0 is a hard jump.");
-    formantSlider.setTooltip ("Formant: shifts the colour of the voice without changing its pitch.");
-    modulationSlider.setTooltip ("Modulation: how much of the vibrato and drift inside the selected notes is kept. 0 flattens them.");
-    volumeSlider.setTooltip ("Volume of the selected notes, in dB. Double-click to reset.");
-    undoButton.setTooltip ("Undo the last edit.");
-    redoButton.setTooltip ("Redo the edit that was undone.");
-    resetButton.setTooltip ("Reset: drop every hand edit and go back to the analysed notes. The key and knobs are kept.");
-    transferButton.setTooltip ("Transfer: arm, then play the passage in the host to record it into the plugin.");
-    enabledButton.setTooltip ("Correction on or off. Off plays the take as it was recorded.");
-    midiButton.setTooltip ("Save the notes, as they will sound, to a MIDI file.");
+    // What each control is, for the pointer that rests on it. The name and the
+    // readout of a knob are part of the knob.
+    describe ({ &rootBox }, "Key: the note the scale is built on.");
+    describe ({ &scaleBox }, "Scale: which notes the correction pulls towards.");
+    describe ({ &detectKeyButton }, "Detect key: set the key and scale to the ones found in the take.");
+    describe ({ &amountSlider, &amountLabel, &amountValue },
+              "Amount: how far every untouched note is pulled onto the scale. Double-click to reset.");
+    describe ({ &transitionSlider, &transitionLabel, &transitionValue },
+              "Speed: how long the pitch takes to glide from one note to the next. 0 is a hard jump.");
+    describe ({ &formantSlider, &formantLabel, &formantValue },
+              "Formant: shifts the colour of the voice without changing its pitch.");
+    describe ({ &modulationSlider, &modulationLabel, &modulationValue },
+              "Modulation: how much of the vibrato and drift inside the selected notes is kept. 0 flattens them.");
+    describe ({ &volumeSlider, &volumeLabel, &volumeValue },
+              "Volume of the selected notes, in dB. Double-click to reset.");
+    describe ({ &undoButton }, "Undo the last edit.");
+    describe ({ &redoButton }, "Redo the edit that was undone.");
+    describe ({ &resetButton },
+              "Reset: drop every hand edit and go back to the analysed notes. The key and knobs are kept.");
+    describe ({ &transferButton },
+              "Transfer: arm, then play the passage in the host to record it into the plugin.");
+    describe ({ &enabledButton }, "Correction on or off. Off plays the take as it was recorded.");
+    describe ({ &stopButton }, "Stop. Pressed again: back to the start.");
+    describe ({ &playButton }, "Play the take from here, without the host.");
+    describe ({ &loopButton }, "Loop: go round the selected notes, or the whole take.");
+    describe ({ &midiButton }, "Export MIDI: save the notes, as they will sound, to a MIDI file.");
+    describe ({ &inspector }, "The selected note: what was sung, how far off it was, where it is going, how long it lasts.");
 
-    grid.onLocate = [this] (int64_t sample)
-    {
-        localStart = sample;
-
-        if (transferMode && processor.getTransfer().isLocalPlaying())
-            processor.getTransfer().startLocalPlayback (sample);
-    };
-
+    hoverTip.setInterceptsMouseClicks (false, false);
+    hoverTip.setAlwaysOnTop (true);
+    addChildComponent (hoverTip);
     transferButton.onClick = [this]
     {
         processor.getTransfer().toggleTransfer();
@@ -584,6 +588,49 @@ void PitchBoxEditor::selectionChanged()
                                : 0.0f,
                            dontSendNotification);
     updateInspector();
+}
+
+void PitchBoxEditor::describe (std::initializer_list<Component*> components, const String& text)
+{
+    for (auto* c : components)
+        described.push_back ({ c, text });
+}
+
+void PitchBoxEditor::updateHoverTip()
+{
+    const auto now = Time::getMillisecondCounter();
+    const auto at = getMouseXYRelative();
+
+    // Only while the pointer is over this window with no button held.
+    auto* under = Desktop::getInstance().getMainMouseSource().getComponentUnderMouse();
+    const auto here = under != nullptr && (under == this || isParentOf (under))
+                      && ! ModifierKeys::currentModifiers.isAnyMouseButtonDown();
+
+    const Described* over = nullptr;
+
+    if (here)
+        for (const auto& d : described)
+            if (d.component->isVisible() && d.component->getBounds().contains (at))
+                over = &d;
+
+    // Any movement starts the wait again, and takes the description away.
+    if (over != resting || at.getDistanceFrom (restingAt) > 3)
+    {
+        resting = over;
+        restingAt = at;
+        restingSince = now;
+        hoverTip.setVisible (false);
+        return;
+    }
+
+    if (resting == nullptr || hoverTip.isVisible() || now - restingSince < 2000)
+        return;
+
+    hoverTip.text = resting->text;
+    hoverTip.setBounds (getLookAndFeel().getTooltipBounds (resting->text, at, getLocalBounds().reduced (6)));
+    hoverTip.setVisible (true);
+    hoverTip.toFront (false);
+    hoverTip.repaint();
 }
 
 void PitchBoxEditor::updateInspector()
@@ -1064,6 +1111,7 @@ void PitchBoxEditor::timerCallback()
     updatePlayhead();
     updateValueReadouts();
     updateInspector();
+    updateHoverTip();
 
     // Only what moves in the header: the light along its foot, and the stars.
     repaint (0, kHeaderHeight - 8, getWidth(), 9);
