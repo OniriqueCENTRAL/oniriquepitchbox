@@ -93,17 +93,33 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
                                              AudioProcessor::Realtime realtime,
                                              const AudioPlayHead::PositionInfo& positionInfo) noexcept
 {
+    using Report = AraPlaybackReport;
+
     const auto numSamples = buffer.getNumSamples();
-    const auto timeInSamples = positionInfo.getTimeInSamples().orFallback (0);
+
+    // Not every host fills in the position in samples; the one in seconds says
+    // the same thing.
+    auto timeInSamples = (int64) 0;
+
+    if (const auto samples = positionInfo.getTimeInSamples())
+        timeInSamples = *samples;
+    else if (const auto seconds = positionInfo.getTimeInSeconds())
+        timeInSamples = (int64) std::llround (*seconds * sampleRate);
 
     // A playback renderer's output is its regions and nothing else: it starts
     // from silence and each region that is sounding is added in.
     buffer.clear();
 
-    if (! positionInfo.getIsPlaying() || ! prepared || numSamples <= 0)
-        return true;
+    Report::calls.fetch_add (1);
 
-    using Report = AraPlaybackReport;
+    if (! prepared)
+    {
+        Report::problem.store (Report::rendererNotPrepared);
+        return true;
+    }
+
+    if (! positionInfo.getIsPlaying() || numSamples <= 0)
+        return true;
 
     Report::playingBlocks.fetch_add (1);
     Report::regions.store ((int) getPlaybackRegions().size());

@@ -266,6 +266,67 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     midiButton.onClick = [this] { exportMidi(); };
     addAndMakeVisible (midiButton);
 
+    // The level of the selected notes.
+    volumeSlider.setSliderStyle (Slider::LinearHorizontal);
+    volumeSlider.setTextBoxStyle (Slider::NoTextBox, false, 0, 0);
+    volumeSlider.setRange (-24.0, 12.0, 0.1);
+    volumeSlider.setValue (0.0, dontSendNotification);
+    volumeSlider.setDoubleClickReturnValue (true, 0.0);
+    volumeSlider.onDragStart = [this] { beginEdit(); };
+    volumeSlider.onValueChange = [this]
+    {
+        const auto selection = grid.getSelection();
+
+        if (selection.empty())
+            return;
+
+        if (! volumeSlider.isMouseButtonDown())
+            beginEdit();
+
+        edits.touched.resize (edits.notes.size(), false);
+
+        for (const auto index : selection)
+        {
+            edits.notes[(size_t) index].gainDb = (float) volumeSlider.getValue();
+            edits.touched[(size_t) index] = true;
+        }
+
+        edits.bump();
+        pushEdits();
+        grid.repaint();
+    };
+    addAndMakeVisible (volumeSlider);
+
+    volumeLabel.setText ("VOLUME", dontSendNotification);
+    volumeLabel.setJustificationType (Justification::centredRight);
+    volumeLabel.setColour (Label::textColourId, mist);
+    addAndMakeVisible (volumeLabel);
+
+    volumeValue.getProperties().set ("pill", true);
+    volumeValue.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (volumeValue);
+
+    inspector.setJustificationType (Justification::centredRight);
+    inspector.setColour (Label::textColourId, Colour (0xffe9c9cc));
+    inspector.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (inspector);
+
+    // What each control is, for the pointer that rests on it.
+    rootBox.setTooltip ("Key: the note the scale is built on.");
+    scaleBox.setTooltip ("Scale: which notes the correction pulls towards.");
+    detectKeyButton.setTooltip ("Set the key and scale to the ones found in the take.");
+    amountSlider.setTooltip ("Amount: how far every untouched note is pulled onto the scale. Double-click to reset.");
+    transitionSlider.setTooltip ("Speed: how long the pitch takes to glide from one note to the next. 0 is a hard jump.");
+    formantSlider.setTooltip ("Formant: shifts the colour of the voice without changing its pitch.");
+    modulationSlider.setTooltip ("Modulation: how much of the vibrato and drift inside the selected notes is kept. 0 flattens them.");
+    volumeSlider.setTooltip ("Volume of the selected notes, in dB. Double-click to reset.");
+    undoButton.setTooltip ("Undo the last edit.");
+    redoButton.setTooltip ("Redo the edit that was undone.");
+    resetButton.setTooltip ("Reset: drop every hand edit and go back to the analysed notes. The key and knobs are kept.");
+    transferButton.setTooltip ("Transfer: arm, then play the passage in the host to record it into the plugin.");
+    enabledButton.setTooltip ("Correction on or off. Off plays the take as it was recorded.");
+    midiButton.setTooltip ("Save the notes, as they will sound, to a MIDI file.");
+
     grid.onLocate = [this] (int64_t sample)
     {
         localStart = sample;
@@ -505,7 +566,8 @@ void PitchBoxEditor::selectionChanged()
     const auto selection = grid.getSelection();
     const auto usable = ! selection.empty();
 
-    for (auto* c : std::initializer_list<Component*> { &modulationSlider, &modulationLabel, &modulationValue })
+    for (auto* c : std::initializer_list<Component*> { &modulationSlider, &modulationLabel, &modulationValue,
+                                                       &volumeSlider, &volumeLabel, &volumeValue })
     {
         c->setEnabled (usable);
         c->setAlpha (usable ? 1.0f : 0.4f);
@@ -516,6 +578,48 @@ void PitchBoxEditor::selectionChanged()
                            : 1.0f;
 
     modulationSlider.setValue (shown, dontSendNotification);
+
+    volumeSlider.setValue (usable && (size_t) selection.front() < edits.notes.size()
+                               ? edits.notes[(size_t) selection.front()].gainDb
+                               : 0.0f,
+                           dontSendNotification);
+    updateInspector();
+}
+
+void PitchBoxEditor::updateInspector()
+{
+    const auto selection = grid.getSelection();
+    const auto analysis = currentAnalysis();
+    String text;
+
+    auto keyName = [] (float cents)
+    {
+        const auto key = roundToInt (cents / 100.0f);
+        return String (pb::noteName (((key % 12) + 12) % 12)) + String (key / 12 - 1);
+    };
+
+    if (selection.size() == 1 && analysis != nullptr && (size_t) selection.front() < edits.notes.size())
+    {
+        // One note: what was sung, how far off, where it is going, how long.
+        const auto& n = edits.notes[(size_t) selection.front()];
+        const auto sungKey = (float) roundToInt (n.centsDetected / 100.0f) * 100.0f;
+        const auto off = roundToInt (n.centsDetected - sungKey);
+
+        text << keyName (n.centsDetected) << " " << (off >= 0 ? "+" : "") << off << " ct";
+
+        if (n.bypassed)
+            text << "   left alone";
+        else
+            text << "   to " << keyName (n.resultCents());
+
+        text << "   " << String ((double) (n.endSample - n.startSample) / analysis->sampleRate, 2) << " s";
+    }
+    else if (selection.size() > 1)
+    {
+        text << (int) selection.size() << " notes selected";
+    }
+
+    inspector.setText (text, dontSendNotification);
 }
 
 void PitchBoxEditor::auditionNote (int index, int64_t position)
@@ -718,6 +822,9 @@ void PitchBoxEditor::analysisProgressed (PitchBoxAudioSource* source, float frac
 
 void PitchBoxEditor::updateValueReadouts()
 {
+    const auto db = volumeSlider.getValue();
+    volumeValue.setText ((db > 0.0 ? "+" : "") + String (db, 1) + " dB", dontSendNotification);
+
     auto percent = [] (double v) { return String (roundToInt (v * 100.0)) + " %"; };
 
     amountValue.setText (percent (amountSlider.getValue()), dontSendNotification);
@@ -849,9 +956,17 @@ void PitchBoxEditor::updateAraStatus()
     // other sign of why.
     String playback;
 
-    if (Report::playingBlocks.load() == 0)
+    if (Report::calls.load() == 0)
     {
-        playback = "ARA: not asked for audio yet";
+        playback = "ARA: the host has not asked this plugin for audio";
+    }
+    else if (Report::problem.load() == Report::rendererNotPrepared)
+    {
+        playback = "ARA: the host never prepared the renderer";
+    }
+    else if (Report::playingBlocks.load() == 0)
+    {
+        playback = "ARA: asked for audio, but the host says its transport is stopped";
     }
     else
     {
@@ -948,6 +1063,7 @@ void PitchBoxEditor::timerCallback()
 {
     updatePlayhead();
     updateValueReadouts();
+    updateInspector();
 
     // Only what moves in the header: the light along its foot, and the stars.
     repaint (0, kHeaderHeight - 8, getWidth(), 9);
@@ -1214,6 +1330,15 @@ void PitchBoxEditor::resized()
     }
 
     midiButton.setBounds (tools.removeFromLeft (126));
+    tools.removeFromLeft (10);
+
+    volumeLabel.setBounds (tools.removeFromLeft (66));
+    tools.removeFromLeft (6);
+    volumeSlider.setBounds (tools.removeFromLeft (120));
+    tools.removeFromLeft (8);
+    volumeValue.setBounds (tools.removeFromLeft (78).withSizeKeepingCentre (78, 22));
+
+    inspector.setBounds (tools.withTrimmedLeft (10));
 
     grid.setBounds (bounds);
 }

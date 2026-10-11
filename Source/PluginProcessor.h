@@ -51,6 +51,12 @@ public:
 
     AudioProcessorARAExtension* getARAClientExtensions() override { return this; }
 
+    /** A host is supposed to bind the plugin to ARA before it prepares it to
+        play. One that does it the other way round has prepared a plugin with
+        no renderer yet, and the renderer it then gets would never be prepared
+        at all; so it is prepared here, with what the host said earlier. */
+    void didBindToARA() noexcept override;
+
     /** True when the host gave us ARA access. Without it there is no take to
         edit, and the editor says so instead of showing an empty canvas. */
     bool hasARAAccess() const noexcept { return isBoundToARA(); }
@@ -68,6 +74,8 @@ public:
 
 private:
     TransferSession transfer;
+    double preparedRate = 0.0;
+    int preparedBlock = 0;
     std::atomic<int64> transportPosition { 0 };
     std::atomic<bool> transportPlaying { false };
 

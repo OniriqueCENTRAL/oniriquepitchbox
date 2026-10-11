@@ -39,9 +39,9 @@ public:
 */
 struct AraPlaybackReport
 {
-    enum Problem { none = 0, regionNotPrepared, rateMismatch, noRegionAtPlayhead };
+    enum Problem { none = 0, regionNotPrepared, rateMismatch, noRegionAtPlayhead, rendererNotPrepared };
 
-    static inline std::atomic<int> playingBlocks { 0 }, renderedBlocks { 0 }, regions { 0 }, problem { none };
+    static inline std::atomic<int> calls { 0 }, playingBlocks { 0 }, renderedBlocks { 0 }, regions { 0 }, problem { none };
     static inline std::atomic<int> takeRate { 0 }, hostRate { 0 };
     static inline std::atomic<float> playheadSeconds { 0.0f }, regionStartSeconds { 0.0f }, regionEndSeconds { 0.0f };
 };

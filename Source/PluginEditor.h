@@ -66,6 +66,7 @@ private:
     void stopLocally();
     void applyLoop();
     void exportMidi();
+    void updateInspector();
     void paintHeader (Graphics&, Rectangle<int> header);
     int titleRight() const;
     void updateValueReadouts();
@@ -95,6 +96,16 @@ private:
                            loopButton { theme::TransportButton::Kind::loop };
     TextButton midiButton { "EXPORT MIDI" };
     std::unique_ptr<FileChooser> fileChooser;
+
+    // What is selected, and how loud it is: the per-note controls that live in
+    // the strip above the grid rather than among the knobs.
+    Slider volumeSlider;
+    Label volumeLabel, volumeValue, inspector;
+
+    /** Shows a control's description once the pointer has rested on it for two
+        seconds. Parented to the editor: a plugin has no business opening
+        windows of its own on the desktop for this. */
+    TooltipWindow tooltips { this, 2000 };
 
     /** Where the plugin's own playback starts from next. */
     int64 localStart = 0;

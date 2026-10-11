@@ -83,6 +83,15 @@ public:
     int getPopupMenuBorderSizeWithOptions (const juce::PopupMenu::Options&) override;
     int getMenuWindowFlags() override;
 
+    // The short description that appears when the pointer rests on a control.
+    juce::Rectangle<int> getTooltipBounds (const juce::String& text, juce::Point<int> screenPos,
+                                           juce::Rectangle<int> parentArea) override;
+    void drawTooltip (juce::Graphics&, const juce::String& text, int width, int height) override;
+
+    void drawLinearSlider (juce::Graphics&, int x, int y, int width, int height, float sliderPos,
+                           float minSliderPos, float maxSliderPos, juce::Slider::SliderStyle,
+                           juce::Slider&) override;
+
     /** A label carrying the "pill" property is drawn as the value readout that
         sits under every knob of the range: a dark capsule with its LED. */
     void drawLabel (juce::Graphics&, juce::Label&) override;

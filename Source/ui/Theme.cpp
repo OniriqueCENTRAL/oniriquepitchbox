@@ -291,6 +291,74 @@ int OniriqueLookAndFeel::getMenuWindowFlags()
     return 0;
 }
 
+//==============================================================================
+namespace
+{
+    constexpr int kTooltipWidth = 250;
+
+    TextLayout layoutTooltip (const String& text)
+    {
+        AttributedString s;
+        s.setJustification (Justification::centredLeft);
+        s.append (text, displayFont (12.5f, false), mist);
+
+        TextLayout layout;
+        layout.createLayout (s, (float) kTooltipWidth);
+        return layout;
+    }
+}
+
+Rectangle<int> OniriqueLookAndFeel::getTooltipBounds (const String& text, Point<int> screenPos,
+                                                      Rectangle<int> parentArea)
+{
+    const auto layout = layoutTooltip (text);
+    const auto width = roundToInt (layout.getWidth()) + 22;
+    const auto height = roundToInt (layout.getHeight()) + 14;
+
+    // Below and to the right of the pointer, or on the other side when that
+    // would run off the edge.
+    return Rectangle<int> (screenPos.x > parentArea.getCentreX() ? screenPos.x - width - 12 : screenPos.x + 18,
+                           screenPos.y > parentArea.getCentreY() ? screenPos.y - height - 10 : screenPos.y + 18,
+                           width, height)
+               .constrainedWithin (parentArea);
+}
+
+void OniriqueLookAndFeel::drawTooltip (Graphics& g, const String& text, int width, int height)
+{
+    const auto bounds = Rectangle<float> (0.0f, 0.0f, (float) width, (float) height).reduced (0.5f);
+
+    g.setGradientFill (ColourGradient (Colour (0xff3d0911), 0.0f, 0.0f, Colour (0xff1c0508), 0.0f, (float) height, false));
+    g.fillRoundedRectangle (bounds, 7.0f);
+    g.setColour (ember.withAlpha (0.6f));
+    g.drawRoundedRectangle (bounds, 7.0f, 1.0f);
+
+    layoutTooltip (text).draw (g, bounds.reduced (11.0f, 7.0f));
+}
+
+void OniriqueLookAndFeel::drawLinearSlider (Graphics& g, int x, int y, int width, int height, float sliderPos,
+                                            float, float, Slider::SliderStyle, Slider& slider)
+{
+    // A thin lit bar with a round handle: the flat cousin of the knobs.
+    const auto track = Rectangle<float> ((float) x, (float) y + (float) height * 0.5f - 2.0f, (float) width, 4.0f);
+
+    g.setColour (Colour (0x26ffd2d6));
+    g.fillRoundedRectangle (track, 2.0f);
+
+    // Filled from where "no change" is, so the middle of a bipolar control
+    // reads as empty.
+    const auto zero = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0
+                          ? (float) x + (float) width * (float) slider.valueToProportionOfLength (0.0)
+                          : (float) x;
+
+    g.setColour (slider.isMouseOverOrDragging() ? emberLit : ember);
+    g.fillRoundedRectangle (track.withLeft (jmin (zero, sliderPos)).withRight (jmax (zero, sliderPos)), 2.0f);
+
+    g.setColour (ember.withAlpha (0.3f));
+    g.fillEllipse (Rectangle<float> (16.0f, 16.0f).withCentre ({ sliderPos, track.getCentreY() }));
+    g.setColour (Colours::white);
+    g.fillEllipse (Rectangle<float> (10.0f, 10.0f).withCentre ({ sliderPos, track.getCentreY() }));
+}
+
 Font OniriqueLookAndFeel::getLabelFont (Label& label)
 {
     return label.getProperties().contains ("pill") ? monoFont (11.0f).boldened() : capsFont (10.0f);

@@ -23,6 +23,9 @@ bool PitchBoxProcessor::isBusesLayoutSupported (const BusesLayout& layouts) cons
 
 void PitchBoxProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    preparedRate = sampleRate;
+    preparedBlock = samplesPerBlock;
+
     prepareToPlayForARA (sampleRate, samplesPerBlock, getMainBusNumOutputChannels(), getProcessingPrecision());
     transfer.prepare (sampleRate, samplesPerBlock, getMainBusNumOutputChannels());
 }
@@ -58,6 +61,14 @@ void PitchBoxProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
     // Outside ARA the buffer is the only audio there is: the transfer session
     // records from it, and replaces it only where it has a take to play.
     transfer.process (buffer, position);
+}
+
+void PitchBoxProcessor::didBindToARA() noexcept
+{
+    AudioProcessorARAExtension::didBindToARA();
+
+    if (preparedRate > 0.0 && preparedBlock > 0)
+        prepareToPlayForARA (preparedRate, preparedBlock, getMainBusNumOutputChannels(), getProcessingPrecision());
 }
 
 AudioProcessorEditor* PitchBoxProcessor::createEditor()
