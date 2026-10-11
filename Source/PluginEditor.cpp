@@ -1043,7 +1043,10 @@ void PitchBoxEditor::updateAraStatus()
                 break;
         }
 
-        playback << "  [" << Report::renderedBlocks.load() << "/" << Report::playingBlocks.load() << "]";
+        // The counts only when something is wrong: they change on every
+        // block, and there is no point redrawing them while all is well.
+        if (Report::problem.load() != Report::none)
+            playback << "  [" << Report::renderedBlocks.load() << "/" << Report::playingBlocks.load() << "]";
     }
 
     auto text = araTakeStatus;

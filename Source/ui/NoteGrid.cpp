@@ -314,17 +314,38 @@ void NoteGrid::drawPitchCurve (Graphics& g)
 
     const auto haveEdits = edits != nullptr && ! edits->notes.empty();
 
-    for (const auto& frame : track.frames)
+    // Only what is on screen and inside what is being repainted. A whole song
+    // is tens of thousands of frames, and the playhead alone asks for a narrow
+    // strip of the grid to be redrawn thirty times a second; walking every
+    // frame for that would tie up the host's interface as well as ours.
+    const auto clip = g.getClipBounds();
+    const auto from = jmax (viewStart, xToTime ((float) clip.getX() - 6.0f));
+    const auto to = jmin (viewStart + viewLength, xToTime ((float) clip.getRight() + 6.0f));
+
+    const auto& frames = track.frames;
+    const auto hop = (int64_t) jmax (1, track.hopSize);
+
+    auto first = std::lower_bound (frames.begin(), frames.end(), from - 2 * hop,
+                                   [] (const pb::PitchFrame& f, int64_t sample) { return f.sampleIndex < sample; });
+    auto last = std::upper_bound (frames.begin(), frames.end(), to + 2 * hop,
+                                  [] (int64_t sample, const pb::PitchFrame& f) { return sample < f.sampleIndex; });
+
+    // And no more than a couple of points to the pixel: beyond that they only
+    // draw over one another.
+    const auto pixels = jmax (1.0f, (float) getWidth() - kRulerWidth);
+    const auto framesPerPixel = ((double) viewLength / (double) hop) / (double) pixels;
+    const auto stride = (std::ptrdiff_t) jmax (1.0, std::floor (framesPerPixel / 2.0));
+
+    for (auto it = first; it < last; it += jmin (stride, last - it))
     {
+        const auto& frame = *it;
+
         if (! frame.voiced || frame.f0Hz <= 0.0f)
         {
             sungOpen = false;
             correctedOpen = false;
             continue;
         }
-
-        if (frame.sampleIndex < viewStart || frame.sampleIndex > viewStart + viewLength)
-            continue;
 
         const auto cents = (float) pb::hzToCents (frame.f0Hz);
         const auto x = timeToX (frame.sampleIndex);
@@ -381,6 +402,10 @@ void NoteGrid::drawNotes (Graphics& g)
         const auto x1 = timeToX (n.endSample);
 
         if (x1 < kRulerWidth || x0 > (float) getWidth())
+            continue;
+
+        // Nor anything outside the part being repainted.
+        if (x1 < (float) g.getClipBounds().getX() - 8.0f || x0 > (float) g.getClipBounds().getRight() + 8.0f)
             continue;
 
         const auto resting = centsToY (n.centsDetected);
