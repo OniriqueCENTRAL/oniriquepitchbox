@@ -50,6 +50,7 @@ private:
     void updateHistoryButtons();
 
     void updatePlayhead();
+    void updateAraStatus();
     void paintHeader (Graphics&, Rectangle<int> header);
     int titleRight() const;
     void updateValueReadouts();
@@ -92,6 +93,9 @@ private:
     double openedAt = Time::getMillisecondCounterHiRes();
 
     String status { "Waiting for an ARA host" };
+
+    /** What the take is, without what playback is doing appended. */
+    String araTakeStatus;
     float progress = 0.0f;
 
     SharedResourcePointer<AnalysisQueue> analysisQueue;

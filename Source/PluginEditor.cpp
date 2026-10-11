@@ -636,8 +636,9 @@ void PitchBoxEditor::analysisFinished (PitchBoxAudioSource* source)
         grid.setStatus ({}, 1.0f);
         clearHistory();
 
-        status = String (analysis->notes.size()) + " notes  ·  key "
-                 + String (analysis->key.scale.describe());
+        araTakeStatus = String (analysis->notes.size()) + String (CharPointer_UTF8 (" notes  \xc2\xb7  key "))
+                        + String (analysis->key.scale.describe());
+        status = araTakeStatus;
 
         pushEdits();
         repaint();
@@ -658,6 +659,54 @@ void PitchBoxEditor::updateValueReadouts()
     transitionValue.setText (String (roundToInt (transitionSlider.getValue() * 1000.0)) + " ms", dontSendNotification);
     formantValue.setText (String (formantSlider.getValue(), 2), dontSendNotification);
     modulationValue.setText (percent (modulationSlider.getValue()), dontSendNotification);
+}
+
+void PitchBoxEditor::updateAraStatus()
+{
+    using Report = AraPlaybackReport;
+
+    // Says what playback is doing, because a host that plays nothing gives no
+    // other sign of why.
+    String playback;
+
+    if (Report::playingBlocks.load() == 0)
+    {
+        playback = "ARA: not asked for audio yet";
+    }
+    else
+    {
+        switch (Report::problem.load())
+        {
+            case Report::regionNotPrepared:
+                playback = "ARA: region not prepared";
+                break;
+
+            case Report::rateMismatch:
+                playback = "ARA: take at " + String (Report::takeRate.load()) + " Hz, session at "
+                           + String (Report::hostRate.load()) + " Hz";
+                break;
+
+            case Report::noRegionAtPlayhead:
+                playback = "ARA: nothing at " + String (Report::playheadSeconds.load(), 1) + " s ("
+                           + String (Report::regions.load()) + " regions, first "
+                           + String (Report::regionStartSeconds.load(), 1) + "-"
+                           + String (Report::regionEndSeconds.load(), 1) + " s)";
+                break;
+
+            default:
+                playback = "ARA: playing";
+                break;
+        }
+
+        playback << "  [" << Report::renderedBlocks.load() << "/" << Report::playingBlocks.load() << "]";
+    }
+
+    auto text = araTakeStatus;
+
+    if (text.isNotEmpty())
+        text << String (CharPointer_UTF8 ("  \xc2\xb7  "));
+
+    showStatus (text + playback, gridStatus, gridProgress);
 }
 
 void PitchBoxEditor::updatePlayhead()
@@ -722,6 +771,8 @@ void PitchBoxEditor::timerCallback()
 
         return;
     }
+
+    updateAraStatus();
 
     if (currentSource == nullptr)
     {

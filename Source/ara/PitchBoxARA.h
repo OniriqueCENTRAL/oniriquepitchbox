@@ -29,6 +29,24 @@ public:
 };
 
 //==============================================================================
+/** What the playback renderer last did, for the editor to show.
+
+    An ARA host that plays nothing gives no other clue as to why: the renderer
+    may never be asked for audio, may be asked for a stretch of the song that
+    none of its regions cover, or may have a take it cannot play. These say
+    which. Process-wide rather than per instance, because the instance the host
+    renders with is often not the one whose window is open.
+*/
+struct AraPlaybackReport
+{
+    enum Problem { none = 0, regionNotPrepared, rateMismatch, noRegionAtPlayhead };
+
+    static inline std::atomic<int> playingBlocks { 0 }, renderedBlocks { 0 }, regions { 0 }, problem { none };
+    static inline std::atomic<int> takeRate { 0 }, hostRate { 0 };
+    static inline std::atomic<float> playheadSeconds { 0.0f }, regionStartSeconds { 0.0f }, regionEndSeconds { 0.0f };
+};
+
+//==============================================================================
 /** Per-take state: what the analysis found, and what the user did about it.
 
     ARA gives every audio source an audio modification, and that is the right
@@ -362,6 +380,14 @@ private:
     };
 
     RegionState* stateFor (ARAPlaybackRegion*);
+    std::unique_ptr<RegionState> makeState (ARAPlaybackRegion*);
+
+    // A host is free to hand over regions after it has prepared the renderer;
+    // one that does must still be played.
+    void didAddPlaybackRegion (ARA::PlugIn::PlaybackRegion*) noexcept override;
+    void willRemovePlaybackRegion (ARA::PlugIn::PlaybackRegion*) noexcept override;
+
+    bool prepared = false;
 
     std::map<ARAPlaybackRegion*, std::unique_ptr<RegionState>> regions;
     SharedResourcePointer<SharedReadThread> sharedReadThread;

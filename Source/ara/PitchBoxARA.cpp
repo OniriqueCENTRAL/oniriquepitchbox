@@ -25,47 +25,64 @@ void PitchBoxPlaybackRenderer::prepareToPlay (double sampleRateIn,
     regionOutput.setSize (jmax (1, numChannels), maxBlock);
     mixBuffer.setSize (jmax (1, numChannels), maxBlock);
 
+    prepared = true;
+
     for (auto* region : getPlaybackRegions())
+        regions.emplace (region, makeState (region));
+}
+
+std::unique_ptr<PitchBoxPlaybackRenderer::RegionState> PitchBoxPlaybackRenderer::makeState (ARAPlaybackRegion* region)
+{
+    auto state = std::make_unique<RegionState>();
+
+    auto* source = region->getAudioModification()->getAudioSource<PitchBoxAudioSource>();
+    auto reader = std::make_unique<ARAAudioSourceReader> (source);
+
+    if (buffered)
     {
-        auto state = std::make_unique<RegionState>();
-
-        auto* source = region->getAudioModification()->getAudioSource<PitchBoxAudioSource>();
-        auto reader = std::make_unique<ARAAudioSourceReader> (source);
-
-        if (buffered)
-        {
-            const auto readAhead = jmax (4 * maxBlock, roundToInt (2.0 * sampleRate));
-            state->reader = std::make_unique<BufferingAudioReader> (reader.release(),
-                                                                    *sharedReadThread,
-                                                                    readAhead);
-        }
-        else
-        {
-            state->reader = std::move (reader);
-        }
-
-        state->renderer.prepare (maxBlock, sampleRate);
-        state->analysis = source->getAnalysis();
-        state->renderer.setAnalysis (state->analysis);
-
-        if (auto* modification = region->getAudioModification<PitchBoxAudioModification>())
-        {
-            modification->copyEditsTo (state->edits);
-            state->editVersion = state->edits.version;
-        }
-
-        regions.emplace (region, std::move (state));
+        const auto readAhead = jmax (4 * maxBlock, roundToInt (2.0 * sampleRate));
+        state->reader = std::make_unique<BufferingAudioReader> (reader.release(),
+                                                                *sharedReadThread,
+                                                                readAhead);
     }
+    else
+    {
+        state->reader = std::move (reader);
+    }
+
+    state->renderer.prepare (maxBlock, sampleRate);
+    state->analysis = source->getAnalysis();
+    state->renderer.setAnalysis (state->analysis);
+
+    if (auto* modification = region->getAudioModification<PitchBoxAudioModification>())
+    {
+        modification->copyEditsTo (state->edits);
+        state->editVersion = state->edits.version;
+    }
+
+    return state;
+}
+
+void PitchBoxPlaybackRenderer::didAddPlaybackRegion (ARA::PlugIn::PlaybackRegion* region) noexcept
+{
+    if (prepared)
+        if (auto* added = static_cast<ARAPlaybackRegion*> (region))
+            regions[added] = makeState (added);
+}
+
+void PitchBoxPlaybackRenderer::willRemovePlaybackRegion (ARA::PlugIn::PlaybackRegion* region) noexcept
+{
+    regions.erase (static_cast<ARAPlaybackRegion*> (region));
 }
 
 void PitchBoxPlaybackRenderer::releaseResources()
 {
+    prepared = false;
     regions.clear();
     sourceWindow.setSize (0, 0);
     regionOutput.setSize (0, 0);
     mixBuffer.setSize (0, 0);
 }
-
 PitchBoxPlaybackRenderer::RegionState* PitchBoxPlaybackRenderer::stateFor (ARAPlaybackRegion* region)
 {
     const auto it = regions.find (region);
@@ -79,28 +96,56 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
     const auto numSamples = buffer.getNumSamples();
     const auto timeInSamples = positionInfo.getTimeInSamples().orFallback (0);
 
+    // A playback renderer's output is its regions and nothing else: it starts
+    // from silence and each region that is sounding is added in.
+    buffer.clear();
+
+    if (! positionInfo.getIsPlaying() || ! prepared || numSamples <= 0)
+        return true;
+
+    using Report = AraPlaybackReport;
+
+    Report::playingBlocks.fetch_add (1);
+    Report::regions.store ((int) getPlaybackRegions().size());
+    Report::hostRate.store (roundToInt (sampleRate));
+    Report::playheadSeconds.store ((float) ((double) timeInSamples / sampleRate));
+
     bool success = true;
     bool renderedAnything = false;
+    auto problem = Report::none;
 
-    if (positionInfo.getIsPlaying() && numSamples <= maxBlock)
+    const auto outputChannels = jmin (buffer.getNumChannels(), sourceWindow.getNumChannels());
+
+    // In slices no longer than the renderer was prepared for, so that a host
+    // which sends more than it announced is still played rather than muted.
+    for (int done = 0; done < numSamples; done += maxBlock)
     {
-        const auto blockRange = Range<int64>::withStartAndLength (timeInSamples, numSamples);
+        const auto sliceLength = jmin (maxBlock, numSamples - done);
+        const auto blockRange = Range<int64>::withStartAndLength (timeInSamples + done, sliceLength);
 
         for (auto* region : getPlaybackRegions())
         {
-            auto* state = stateFor (region);
+            const auto regionRange = region->getSampleRange (sampleRate, ARAPlaybackRegion::IncludeHeadAndTail::no);
 
-            if (state == nullptr || state->reader == nullptr)
+            if (done == 0 && region == getPlaybackRegions().front())
             {
-                success = false;
-                continue;
+                Report::regionStartSeconds.store ((float) ((double) regionRange.getStart() / sampleRate));
+                Report::regionEndSeconds.store ((float) ((double) regionRange.getEnd() / sampleRate));
             }
 
-            const auto regionRange = region->getSampleRange (sampleRate, ARAPlaybackRegion::IncludeHeadAndTail::no);
             auto renderRange = blockRange.getIntersectionWith (regionRange);
 
             if (renderRange.isEmpty())
                 continue;
+
+            auto* state = stateFor (region);
+
+            if (state == nullptr || state->reader == nullptr)
+            {
+                problem = Report::regionNotPrepared;
+                success = false;
+                continue;
+            }
 
             // Song time to take time. This plugin does not stretch, so the two
             // run at the same rate and differ only by an offset.
@@ -115,9 +160,13 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
 
             auto* source = region->getAudioModification()->getAudioSource<PitchBoxAudioSource>();
 
-            if (source->getChannelCount() != numChannels
-                || ! approximatelyEqual (source->getSampleRate(), sampleRate))
+            // A take is only played at the rate it was recorded at. Its channel
+            // count is another matter: a mono take on a stereo track is the
+            // ordinary case, and the reader spreads it across the channels.
+            if (! approximatelyEqual (source->getSampleRate(), sampleRate))
             {
+                Report::takeRate.store (roundToInt (source->getSampleRate()));
+                problem = Report::rateMismatch;
                 success = false;
                 continue;
             }
@@ -140,7 +189,7 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
             }
 
             const auto count = (int) renderRange.getLength();
-            const auto startInBuffer = (int) (renderRange.getStart() - blockRange.getStart());
+            const auto startInBuffer = done + (int) (renderRange.getStart() - blockRange.getStart());
             const auto startInTake = renderRange.getStart() + offset;
 
             const auto wanted = (int64) state->renderer.paddingSamples (state->edits.settings.formantRatio);
@@ -158,13 +207,14 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
             if (auto* b = dynamic_cast<BufferingAudioReader*> (bufferedReader))
                 b->setReadTimeout (realtime == AudioProcessor::Realtime::no ? 100 : 0);
 
+            // A read that comes back short has left silence where the audio
+            // was not ready yet. That is played as it is: dropping the whole
+            // block for it would mute what did arrive.
             if (! bufferedReader->read (&sourceWindow, 0, windowLength, windowStart, true, true))
-            {
                 success = false;
-                continue;
-            }
 
-            for (int c = 0; c < numChannels; ++c)
+            for (int c = 0; c < outputChannels; ++c)
+            {
                 state->renderer.render (sourceWindow.getReadPointer (c),
                                         windowStart,
                                         windowLength,
@@ -174,37 +224,21 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
                                         regionOutput.getWritePointer (c),
                                         startInTake);
 
-            if (renderedAnything)
-            {
-                for (int c = 0; c < numChannels; ++c)
-                    buffer.addFrom (c, startInBuffer, regionOutput, c, 0, count);
+                buffer.addFrom (c, startInBuffer, regionOutput, c, 0, count);
             }
-            else
-            {
-                for (int c = 0; c < numChannels; ++c)
-                {
-                    buffer.copyFrom (c, startInBuffer, regionOutput, c, 0, count);
 
-                    if (startInBuffer > 0)
-                        buffer.clear (c, 0, startInBuffer);
-
-                    const auto endInBuffer = startInBuffer + count;
-
-                    if (endInBuffer < numSamples)
-                        buffer.clear (c, endInBuffer, numSamples - endInBuffer);
-                }
-
-                renderedAnything = true;
-            }
+            renderedAnything = true;
         }
     }
 
-    if (! renderedAnything)
-        buffer.clear();
+    if (renderedAnything)
+        Report::renderedBlocks.fetch_add (1);
+    else if (problem == Report::none)
+        problem = Report::noRegionAtPlayhead;
 
+    Report::problem.store (problem);
     return success;
 }
-
 //==============================================================================
 PitchBoxDocumentController::~PitchBoxDocumentController()
 {
