@@ -350,7 +350,10 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     analysisQueue->addListener (this);
 
     setResizable (true, true);
-    setResizeLimits (1060, 690, 2400, 1500);
+    // Small enough to fit the strip a host docks an ARA editor in, and with no
+    // real ceiling: a host that stretches the editor across a wide screen must
+    // not be stopped short and left with a bare band beside it.
+    setResizeLimits (900, 500, 8000, 4000);
     setSize (1200, 770);
 
     refreshTarget();
@@ -1054,7 +1057,7 @@ void PitchBoxEditor::updateAraStatus()
 void PitchBoxEditor::updatePlayhead()
 {
     int64 song = 0;
-    const auto playing = processor.getTransport (song);
+    auto playing = processor.getTransport (song);
 
     int64 inTake = 0;
     bool visible = false;
@@ -1087,19 +1090,30 @@ void PitchBoxEditor::updatePlayhead()
     }
     else if (currentModification != nullptr)
     {
+        // Under ARA the position comes from whichever instance is rendering,
+        // which need not be this one.
+        using Report = AraPlaybackReport;
+
+        if (Report::calls.load() > 0 && Report::hostRate.load() > 0)
+        {
+            song = Report::playheadSamples.load();
+            playing = Time::getMillisecondCounter() - Report::lastPlayingAt.load() < 250;
+        }
+
+        const auto sessionRate = Report::hostRate.load() > 0 ? (double) Report::hostRate.load()
+                                                             : processor.getSampleRate();
         // Song time to take time, through whichever region of this take the
         // transport is in.
         for (auto* region : currentModification->getPlaybackRegions())
         {
-            const auto range = region->getSampleRange (processor.getSampleRate(),
+            const auto range = region->getSampleRange (sessionRate,
                                                        ARAPlaybackRegion::IncludeHeadAndTail::no);
 
             if (range.contains (song))
             {
                 // The take counts in samples of its own rate, not the session's.
                 const auto takeRate = currentSource != nullptr ? currentSource->getSampleRate() : 0.0;
-                const auto step = takeRate > 0.0 && processor.getSampleRate() > 0.0
-                                      ? takeRate / processor.getSampleRate() : 1.0;
+                const auto step = takeRate > 0.0 && sessionRate > 0.0 ? takeRate / sessionRate : 1.0;
 
                 inTake = (int64) std::llround ((double) (song - range.getStart()) * step)
                          + region->getStartInAudioModificationSamples();
@@ -1355,13 +1369,22 @@ void PitchBoxEditor::resized()
 
     // Four knobs share whatever height is left, so the panel still fits at the
     // smallest window size. Each is a name, the dial, and its readout.
-    const auto knobHeight = jlimit (104, 132, side.getHeight() / 4 - 6);
+    const auto knobHeight = jlimit (62, 132, side.getHeight() / 4 - 6);
 
-    auto knob = [&side, knobHeight] (Slider& s, Label& l, Label& readout)
+    // In a low window there is no room for the readouts under the dials; the
+    // dials stay, and the value is still there in the description.
+    const auto showReadouts = knobHeight >= 100;
+
+    auto knob = [&side, knobHeight, showReadouts] (Slider& s, Label& l, Label& readout)
     {
         auto area = side.removeFromTop (knobHeight);
         l.setBounds (area.removeFromTop (16));
-        readout.setBounds (area.removeFromBottom (22).withSizeKeepingCentre (96, 22));
+
+        readout.setVisible (showReadouts);
+
+        if (showReadouts)
+            readout.setBounds (area.removeFromBottom (22).withSizeKeepingCentre (96, 22));
+
         s.setBounds (area.reduced (14, 0));
         side.removeFromTop (6);
     };

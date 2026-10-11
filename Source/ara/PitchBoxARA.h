@@ -45,6 +45,13 @@ struct AraPlaybackReport
     static inline std::atomic<int> calls { 0 }, playingBlocks { 0 }, renderedBlocks { 0 }, regions { 0 }, problem { none };
     static inline std::atomic<int> takeRate { 0 }, hostRate { 0 };
     static inline std::atomic<float> playheadSeconds { 0.0f }, regionStartSeconds { 0.0f }, regionEndSeconds { 0.0f };
+
+    /** Where the transport is, in the session's samples, and when a block was
+        last rendered with it running. The editor's playhead reads these rather
+        than its own instance's position, because the instance a host opens the
+        window on is often not the one it renders with. */
+    static inline std::atomic<int64> playheadSamples { 0 };
+    static inline std::atomic<uint32> lastPlayingAt { 0 };
 };
 
 //==============================================================================

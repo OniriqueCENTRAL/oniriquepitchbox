@@ -136,6 +136,8 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
     Report::regions.store ((int) getPlaybackRegions().size());
     Report::hostRate.store (roundToInt (sampleRate));
     Report::playheadSeconds.store ((float) ((double) timeInSamples / sampleRate));
+    Report::playheadSamples.store (timeInSamples);
+    Report::lastPlayingAt.store (Time::getMillisecondCounter());
 
     bool success = true;
     bool renderedAnything = false;
