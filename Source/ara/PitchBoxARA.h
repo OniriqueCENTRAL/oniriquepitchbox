@@ -7,6 +7,7 @@
 #include "../model/Analysis.h"
 #include "../model/EditState.h"
 #include "../model/RegionRenderer.h"
+#include "../dsp/Resample.h"
 
 namespace onirique
 {
@@ -377,6 +378,11 @@ private:
         pb::EditState      edits;
         uint64_t           editVersion = 0;
         pb::Analysis::Ptr  analysis;
+
+        // The take's own rate, which need not be the session's: it is rendered
+        // at this one and read out at the other.
+        double takeRate = 48000.0;
+        int64  padding = 0;   // source context either side of a block, in take samples
     };
 
     RegionState* stateFor (ARAPlaybackRegion*);

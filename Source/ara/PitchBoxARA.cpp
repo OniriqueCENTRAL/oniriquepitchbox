@@ -17,14 +17,8 @@ void PitchBoxPlaybackRenderer::prepareToPlay (double sampleRateIn,
 
     regions.clear();
 
-    // The widest source context any region could ask for, so the read window is
-    // sized once here rather than grown on the audio thread.
-    windowPadding = (int64) std::ceil (0.25 * sampleRate);
-
-    sourceWindow.setSize (jmax (1, numChannels), maxBlock + 2 * (int) windowPadding);
-    regionOutput.setSize (jmax (1, numChannels), maxBlock);
-    mixBuffer.setSize (jmax (1, numChannels), maxBlock);
-
+    sourceWindow.setSize (jmax (1, numChannels), 0);
+    regionOutput.setSize (jmax (1, numChannels), 0);
     prepared = true;
 
     for (auto* region : getPlaybackRegions())
@@ -50,7 +44,24 @@ std::unique_ptr<PitchBoxPlaybackRenderer::RegionState> PitchBoxPlaybackRenderer:
         state->reader = std::move (reader);
     }
 
-    state->renderer.prepare (maxBlock, sampleRate);
+    // Everything about the take is in its own rate: the analysis, the edits,
+    // the renderer. A block of the session's samples covers this many of its.
+    state->takeRate = source->getSampleRate() > 0.0 ? source->getSampleRate() : sampleRate;
+
+    const auto takeBlock = (int) std::ceil ((double) maxBlock * state->takeRate / sampleRate) + 8;
+    state->padding = (int64) std::ceil (0.25 * state->takeRate);
+
+    // The buffers are shared between regions, so they are as large as the
+    // largest of them needs. Grown here, never on the audio thread.
+    const auto windowNeeded = takeBlock + 2 * (int) state->padding;
+
+    if (sourceWindow.getNumSamples() < windowNeeded)
+        sourceWindow.setSize (sourceWindow.getNumChannels(), windowNeeded);
+
+    if (regionOutput.getNumSamples() < takeBlock)
+        regionOutput.setSize (regionOutput.getNumChannels(), takeBlock);
+
+    state->renderer.prepare (takeBlock, state->takeRate);
     state->analysis = source->getAnalysis();
     state->renderer.setAnalysis (state->analysis);
 
@@ -163,29 +174,27 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
                 continue;
             }
 
-            // Song time to take time. This plugin does not stretch, so the two
-            // run at the same rate and differ only by an offset.
-            const Range<int64> modificationRange { region->getStartInAudioModificationSamples(),
-                                                   region->getEndInAudioModificationSamples() };
-            const auto offset = modificationRange.getStart() - regionRange.getStart();
-
-            renderRange = renderRange.getIntersectionWith (modificationRange.movedToStartAt (regionRange.getStart()));
-
-            if (renderRange.isEmpty())
-                continue;
-
             auto* source = region->getAudioModification()->getAudioSource<PitchBoxAudioSource>();
 
-            // A take is only played at the rate it was recorded at. Its channel
-            // count is another matter: a mono take on a stereo track is the
-            // ordinary case, and the reader spreads it across the channels.
-            if (! approximatelyEqual (source->getSampleRate(), sampleRate))
-            {
-                Report::takeRate.store (roundToInt (source->getSampleRate()));
-                problem = Report::rateMismatch;
-                success = false;
+            // Song time to take time. This plugin does not stretch, so the two
+            // run at the same speed; but the take counts in samples of its own
+            // rate, which need not be the session's. `step` is how many of its
+            // samples go by for each one of the session's.
+            const auto step = state->takeRate / sampleRate;
+            const auto sameRate = approximatelyEqual (step, 1.0);
+
+            const auto takeBegins = (double) region->getStartInAudioModificationSamples();
+            const auto takeEnds = (double) region->getEndInAudioModificationSamples();
+
+            // Where the first sample of this slice falls in the take.
+            const auto firstPosition = takeBegins + (double) (renderRange.getStart() - regionRange.getStart()) * step;
+
+            // No further than the part of the take the region covers.
+            const auto count = jmin ((int) renderRange.getLength(),
+                                     (int) std::ceil ((takeEnds - firstPosition) / step));
+
+            if (count <= 0)
                 continue;
-            }
 
             // Pick up a newly finished analysis, or edits the user just made.
             // Both are plain pointer or version comparisons, so a block in
@@ -204,17 +213,30 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
                 state->editVersion = state->edits.version;
             }
 
-            const auto count = (int) renderRange.getLength();
             const auto startInBuffer = done + (int) (renderRange.getStart() - blockRange.getStart());
-            const auto startInTake = renderRange.getStart() + offset;
+
+            // The stretch of the take to render: exactly the slice when the
+            // rates agree, otherwise the samples around every position that
+            // will be read, with one to spare before and two after.
+            const auto takeFirst = sameRate ? (int64) std::llround (firstPosition)
+                                            : (int64) std::floor (firstPosition) - 1;
+            const auto takeLast = sameRate ? takeFirst + count
+                                           : (int64) std::floor (firstPosition + (double) (count - 1) * step) + 3;
+            const auto takeCount = (int) (takeLast - takeFirst);
+
+            if (takeCount > regionOutput.getNumSamples())
+            {
+                success = false;
+                continue;
+            }
 
             const auto wanted = (int64) state->renderer.paddingSamples (state->edits.settings.formantRatio);
-            const auto padding = jlimit ((int64) 0, windowPadding, wanted);
+            const auto padding = jlimit ((int64) 0, state->padding, wanted);
 
             // Read the take around the block, so the grain machinery has the
             // context it needs on both sides.
-            const auto windowStart = startInTake - padding;
-            const auto windowLength = count + 2 * (int) padding;
+            const auto windowStart = takeFirst - padding;
+            const auto windowLength = takeCount + 2 * (int) padding;
 
             sourceWindow.clear (0, windowLength);
 
@@ -231,22 +253,41 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
 
             for (int c = 0; c < outputChannels; ++c)
             {
+                auto* rendered = regionOutput.getWritePointer (c);
+
                 state->renderer.render (sourceWindow.getReadPointer (c),
                                         windowStart,
                                         windowLength,
                                         state->edits,
-                                        startInTake,
-                                        startInTake + count,
-                                        regionOutput.getWritePointer (c),
-                                        startInTake);
+                                        takeFirst,
+                                        takeLast,
+                                        rendered,
+                                        takeFirst);
 
-                buffer.addFrom (c, startInBuffer, regionOutput, c, 0, count);
+                if (sameRate)
+                {
+                    buffer.addFrom (c, startInBuffer, rendered, count);
+                    continue;
+                }
+
+                // Read it out at the session's rate, straight into the mix.
+                auto* out = buffer.getWritePointer (c, startInBuffer);
+
+                for (int i = 0; i < count; i += 256)
+                {
+                    float chunk[256];
+                    const auto n = jmin (256, count - i);
+
+                    pb::readAtRate (rendered, firstPosition + (double) i * step - (double) takeFirst, step, chunk, n);
+
+                    for (int k = 0; k < n; ++k)
+                        out[i + k] += chunk[k];
+                }
             }
 
             renderedAnything = true;
         }
     }
-
     if (renderedAnything)
         Report::renderedBlocks.fetch_add (1);
     else if (problem == Report::none)

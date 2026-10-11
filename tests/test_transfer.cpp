@@ -4,6 +4,7 @@
 #include "TestSignal.h"
 
 #include "../Source/transfer/TransferSession.h"
+#include "../Source/dsp/Resample.h"
 
 #include <chrono>
 #include <cstdio>
@@ -635,6 +636,45 @@ int main()
         check (known && found == clipStart, "and lined up with the track by ear", d);
 
         file.deleteFile();
+    }
+
+    {
+        // A take at one rate played in a session at another: 48 kHz read out
+        // at 44.1 kHz. A tone has to come out as the same tone, and the same
+        // samples whether they are asked for all at once or in pieces.
+        const double takeRate = 48000.0, sessionRate = 44100.0, tone = 440.0;
+        const auto step = takeRate / sessionRate;
+
+        std::vector<float> source (48000 + 8);
+
+        for (size_t i = 0; i < source.size(); ++i)
+            source[i] = (float) std::sin (2.0 * juce::MathConstants<double>::pi * tone * (double) i / takeRate);
+
+        const int count = 40000;
+        std::vector<float> whole ((size_t) count), pieces ((size_t) count);
+
+        readAtRate (source.data(), 1.0, step, whole.data(), count);
+
+        int index = 0;
+
+        for (int done = 0; done < count;)
+        {
+            const auto n = std::min (nextBlockSize (index++), count - done);
+            readAtRate (source.data(), 1.0 + (double) done * step, step, pieces.data() + done, n);
+            done += n;
+        }
+
+        double worst = 0.0;
+
+        for (int i = 0; i < count; ++i)
+            worst = std::max (worst, std::abs ((double) whole[(size_t) i]
+                                               - std::sin (2.0 * juce::MathConstants<double>::pi * tone
+                                                           * (1.0 + (double) i * step) / takeRate)));
+
+        std::snprintf (d, sizeof d, "tone off by %.1f dB at most, pieces differ by %.2g",
+                       20.0 * std::log10 (worst + 1.0e-12), maxDifference (whole, pieces));
+        check (worst < 1.0e-3 && maxDifference (whole, pieces) == 0.0,
+               "a take at another rate reads out true", d);
     }
 
     {

@@ -1096,7 +1096,13 @@ void PitchBoxEditor::updatePlayhead()
 
             if (range.contains (song))
             {
-                inTake = song - range.getStart() + region->getStartInAudioModificationSamples();
+                // The take counts in samples of its own rate, not the session's.
+                const auto takeRate = currentSource != nullptr ? currentSource->getSampleRate() : 0.0;
+                const auto step = takeRate > 0.0 && processor.getSampleRate() > 0.0
+                                      ? takeRate / processor.getSampleRate() : 1.0;
+
+                inTake = (int64) std::llround ((double) (song - range.getStart()) * step)
+                         + region->getStartInAudioModificationSamples();
                 visible = true;
                 break;
             }
