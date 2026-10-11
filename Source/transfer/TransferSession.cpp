@@ -6,7 +6,7 @@ namespace onirique
 namespace
 {
     constexpr int kStateMagic = 0x58425450;   // "PTBX"
-    constexpr int kStateVersion = 1;
+    constexpr int kStateVersion = 2;   // 2 added whether the take has been placed
 
     constexpr int kCodecRaw = 0;
     constexpr int kCodecFlac = 1;
@@ -171,6 +171,73 @@ namespace
         return true;
     }
 
+    /** How much of the track is listened to in order to find it in the file. */
+    constexpr double kAlignSeconds = 0.6;
+
+    /** The search is done on both signals thinned out by this much first, and
+        only finished at full rate around the best place found. */
+    constexpr int kAlignDecimation = 16;
+
+    std::shared_ptr<TransferTake> makeEmptyTake (double sampleRate, int channels, int64 numSamples);
+
+    /** Reads a file in as a take at the given rate, or at its own if that is
+        not known yet. Mono or stereo; anything wider keeps its first two
+        channels. */
+    std::shared_ptr<TransferTake> loadFile (const File& file, double targetRate)
+    {
+        AudioFormatManager formats;
+        formats.registerBasicFormats();
+
+        std::unique_ptr<AudioFormatReader> reader (formats.createReaderFor (file));
+
+        if (reader == nullptr || reader->lengthInSamples <= 0 || reader->sampleRate <= 0.0)
+            return nullptr;
+
+        const auto channels = jlimit (1, 2, (int) reader->numChannels);
+        const auto sourceLength = (int) std::min (reader->lengthInSamples,
+                                                  (int64) (kMaxTakeSeconds * reader->sampleRate));
+
+        // A few samples of silence past the end, for the interpolator to run into.
+        AudioBuffer<float> source (channels, sourceLength + 16);
+        source.clear();
+
+        if (! reader->read (&source, 0, sourceLength, 0, true, true))
+            return nullptr;
+
+        const auto rate = targetRate > 0.0 ? targetRate : reader->sampleRate;
+
+        if (approximatelyEqual (rate, reader->sampleRate))
+        {
+            auto take = makeEmptyTake (rate, channels, sourceLength);
+
+            for (int c = 0; c < channels; ++c)
+                std::copy (source.getReadPointer (c), source.getReadPointer (c) + sourceLength,
+                           take->channels[(size_t) c].begin() + (std::ptrdiff_t) take->padding);
+
+            return take;
+        }
+
+        // The session runs at another rate: bring the file to it once, here,
+        // so that everything downstream can go on assuming one rate.
+        const auto length = (int64) std::floor ((double) sourceLength * rate / reader->sampleRate);
+
+        if (length <= 0)
+            return nullptr;
+
+        auto take = makeEmptyTake (rate, channels, length);
+
+        for (int c = 0; c < channels; ++c)
+        {
+            LagrangeInterpolator interpolator;
+            interpolator.process (reader->sampleRate / rate,
+                                  source.getReadPointer (c),
+                                  take->channels[(size_t) c].data() + (size_t) take->padding,
+                                  (int) length, sourceLength + 16, 0);
+        }
+
+        return take;
+    }
+
     std::shared_ptr<TransferTake> makeEmptyTake (double sampleRate, int channels, int64 numSamples)
     {
         auto take = std::make_shared<TransferTake>();
@@ -192,6 +259,7 @@ TransferSession::TransferSession() : Thread ("PitchBox transfer analysis")
 TransferSession::~TransferSession()
 {
     stopTimer();
+    aligner.stopThread (10000);
     stopThread (10000);
 }
 
@@ -231,6 +299,11 @@ void TransferSession::prepare (double newSampleRate, int maxBlockSamples, int ch
         drainFifo();
         state.store (State::finishing);
     }
+
+    aligner.stopThread (10000);
+    alignBuffer.assign ((size_t) std::lround (kAlignSeconds * sampleRate), 0.0f);
+    alignReady.store (false);
+    alignFill = 0;
 
     const auto fifoSize = (int) std::ceil (kFifoSeconds * sampleRate) + maxBlock;
     fifoBuffer.setSize (numChannels, fifoSize);
@@ -418,12 +491,22 @@ void TransferSession::process (AudioBuffer<float>& buffer,
     heldVoice.gain = 0.0f;
     fadingVoice.gain = 0.0f;
 
-    refreshAudioState (true, audioTake != nullptr ? songTime - audioTake->startInSong : 0);
+    const auto takeStart = placement.load();
+
+    refreshAudioState (true, songTime - takeStart);
 
     if (audioTake == nullptr || ! approximatelyEqual (audioTake->sampleRate, sampleRate))
         return;
 
-    const auto takeRange = Range<int64>::withStartAndLength (audioTake->startInSong, audioTake->numSamples);
+    // An imported take that has not been found on the timeline yet is not
+    // played: the track goes through untouched, and is listened to.
+    if (! placed.load())
+    {
+        collectForAlignment (buffer, songTime);
+        return;
+    }
+
+    const auto takeRange = Range<int64>::withStartAndLength (takeStart, audioTake->numSamples);
     const auto blockRange = Range<int64>::withStartAndLength (songTime, numSamples);
     const auto range = blockRange.getIntersectionWith (takeRange);
 
@@ -431,16 +514,16 @@ void TransferSession::process (AudioBuffer<float>& buffer,
         return;
 
     const auto sliceChannels = jmin ((int) audioTake->channels.size(), renderSlice.getNumChannels());
-    const auto last = range.getEnd() - audioTake->startInSong;
+    const auto last = range.getEnd() - takeStart;
 
-    for (auto at = range.getStart() - audioTake->startInSong; at < last;)
+    for (auto at = range.getStart() - takeStart; at < last;)
     {
         if (at < sliceStart || at >= sliceStart + sliceLength)
             fillRenderSlice (at);
 
         auto count = (int) (std::min (last, sliceStart + sliceLength) - at);
         const auto inSlice = (int) (at - sliceStart);
-        const auto inBuffer = (int) (at + audioTake->startInSong - blockRange.getStart());
+        const auto inBuffer = (int) (at + takeStart - blockRange.getStart());
 
         if (fadeRemaining <= 0)
         {
@@ -477,6 +560,62 @@ void TransferSession::process (AudioBuffer<float>& buffer,
 
         fadeRemaining -= count;
         at += count;
+    }
+}
+
+void TransferSession::collectForAlignment (const AudioBuffer<float>& buffer, int64 songTime) noexcept
+{
+    if (alignBuffer.empty() || alignReady.load() || alignFailed.load())
+        return;
+
+    const auto numSamples = buffer.getNumSamples();
+    const auto channels = buffer.getNumChannels();
+
+    // What is collected has to be one unbroken stretch of one take's track.
+    if (audioTake.get() != alignCollectingFor || (alignFill > 0 && songTime != alignExpected))
+    {
+        alignCollectingFor = audioTake.get();
+        alignFill = 0;
+    }
+
+    alignExpected = songTime + numSamples;
+
+    auto monoAt = [&buffer, channels] (int i)
+    {
+        float sum = 0.0f;
+
+        for (int c = 0; c < channels; ++c)
+            sum += buffer.getSample (c, i);
+
+        return sum / (float) channels;
+    };
+
+    int from = 0;
+
+    if (alignFill == 0)
+    {
+        // Wait for the track to make a sound: silence matches everywhere.
+        while (from < numSamples && std::abs (monoAt (from)) < 0.003f)
+            ++from;
+
+        if (from == numSamples)
+            return;
+
+        alignStart = songTime + from;
+    }
+
+    const auto count = jmin (numSamples - from, (int) alignBuffer.size() - alignFill);
+
+    for (int i = 0; i < count; ++i)
+        alignBuffer[(size_t) (alignFill + i)] = monoAt (from + i);
+
+    alignFill += count;
+
+    if (alignFill >= (int) alignBuffer.size())
+    {
+        alignSongTime.store (alignStart);
+        alignFill = 0;
+        alignReady.store (true);
     }
 }
 
@@ -984,8 +1123,162 @@ void TransferSession::drainFifo()
     recordedSamples.store ((int64) captured.front().size());
 }
 
+void TransferSession::alignToTrack()
+{
+    // Whatever happens, the audio thread gets its buffer back at the end.
+    const ScopeGuard done { [this]
+    {
+        alignReady.store (false);
+        sendChangeMessage();
+    } };
+
+    TransferTake::Ptr current;
+
+    {
+        const SpinLock::ScopedLockType lock (sharedLock);
+        current = take;
+    }
+
+    if (current == nullptr || placed.load() || alignBuffer.empty())
+        return;
+
+    constexpr int D = kAlignDecimation;
+    const auto& heard = alignBuffer;
+    const auto heardLength = (int64) heard.size();
+    const auto channels = current->channels.size();
+
+    auto takeAt = [&current, channels] (int64 i)
+    {
+        float sum = 0.0f;
+
+        for (const auto& channel : current->channels)
+            sum += channel[(size_t) (current->padding + i)];
+
+        return sum / (float) channels;
+    };
+
+    // Thinned-out copies of both. The take's is kept: the first attempt may
+    // land on a stretch too plain to be told from its neighbours.
+    if (alignTakeFor != current)
+    {
+        alignTakeDecimated.assign ((size_t) (current->numSamples / D), 0.0f);
+
+        for (size_t j = 0; j < alignTakeDecimated.size(); ++j)
+        {
+            float sum = 0.0f;
+
+            for (int k = 0; k < D; ++k)
+                sum += takeAt ((int64) j * D + k);
+
+            alignTakeDecimated[j] = sum / (float) D;
+        }
+
+        alignTakeFor = current;
+    }
+
+    std::vector<float> thin ((size_t) (heardLength / D), 0.0f);
+    double thinEnergy = 0.0;
+
+    for (size_t j = 0; j < thin.size(); ++j)
+    {
+        float sum = 0.0f;
+
+        for (int k = 0; k < D; ++k)
+            sum += heard[j * D + (size_t) k];
+
+        thin[j] = sum / (float) D;
+        thinEnergy += (double) thin[j] * thin[j];
+    }
+
+    const auto& wide = alignTakeDecimated;
+
+    if (wide.size() < thin.size() || thinEnergy <= 0.0)
+        return;
+
+    // Energy of the take under the window at each place, from a running sum.
+    std::vector<double> energyTo (wide.size() + 1, 0.0);
+
+    for (size_t j = 0; j < wide.size(); ++j)
+        energyTo[j + 1] = energyTo[j] + (double) wide[j] * wide[j];
+
+    double bestScore = 0.0;
+    size_t bestPlace = 0;
+
+    for (size_t j = 0; j + thin.size() <= wide.size(); ++j)
+    {
+        if ((j & 4095) == 0 && aligner.threadShouldExit())
+            return;
+
+        const auto under = energyTo[j + thin.size()] - energyTo[j];
+
+        if (under < 1.0e-9)
+            continue;
+
+        float cross = 0.0f;
+        const auto* a = thin.data();
+        const auto* b = wide.data() + j;
+
+        for (size_t k = 0; k < thin.size(); ++k)
+            cross += a[k] * b[k];
+
+        const auto score = std::abs ((double) cross) / std::sqrt (thinEnergy * under);
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestPlace = j;
+        }
+    }
+
+    // And to the sample, at full rate, around there.
+    double heardEnergy = 0.0;
+
+    for (const auto s : heard)
+        heardEnergy += (double) s * s;
+
+    double exactScore = 0.0;
+    int64 exactPlace = 0;
+
+    const auto first = std::max<int64> (0, (int64) bestPlace * D - 2 * D);
+    const auto last = std::min<int64> (current->numSamples - heardLength, (int64) bestPlace * D + 2 * D);
+
+    for (auto lag = first; lag <= last; ++lag)
+    {
+        double cross = 0.0, under = 0.0;
+
+        for (int64 i = 0; i < heardLength; ++i)
+        {
+            const auto t = (double) takeAt (lag + i);
+            cross += (double) heard[(size_t) i] * t;
+            under += t * t;
+        }
+
+        const auto score = std::abs (cross) / (std::sqrt (heardEnergy * under) + 1.0e-12);
+
+        if (score > exactScore)
+        {
+            exactScore = score;
+            exactPlace = lag;
+        }
+    }
+
+    if (exactScore > 0.6)
+    {
+        placement.store (alignSongTime.load() - exactPlace);
+        placed.store (true);
+    }
+    else if (++alignAttempts >= 4)
+    {
+        // Four different stretches of the track, none of them in the file.
+        alignFailed.store (true);
+    }
+}
+
 void TransferSession::timerCallback()
 {
+    if (alignReady.load() && ! aligner.isThreadRunning())
+        aligner.startThread (Priority::low);
+
     const auto current = state.load();
 
     if (current != State::recording && current != State::finishing)
@@ -1039,11 +1332,48 @@ void TransferSession::timerCallback()
 }
 
 //==============================================================================
+void TransferSession::importFile (const File& file)
+{
+    // Not while a transfer is being recorded: one take at a time.
+    if (state.load() != State::idle)
+        return;
+
+    stopThread (10000);
+
+    pendingImport = file;
+    importError.store (false);
+    importing.store (true);
+
+    startThread (Priority::low);
+    sendChangeMessage();
+}
+
 void TransferSession::install (TransferTake::Ptr newTake,
                                const pb::EditState* replacementEdits,
-                               std::shared_ptr<const MemoryBlock> encodedAudio)
+                               std::shared_ptr<const MemoryBlock> encodedAudio,
+                               bool takeIsPlaced)
 {
     stopThread (10000);
+    publishTake (newTake, replacementEdits, std::move (encodedAudio), takeIsPlaced);
+
+    if (newTake != nullptr)
+    {
+        analysing.store (true);
+        startThread (Priority::low);
+    }
+
+    sendChangeMessage();
+}
+
+void TransferSession::publishTake (TransferTake::Ptr newTake,
+                                   const pb::EditState* replacementEdits,
+                                   std::shared_ptr<const MemoryBlock> encodedAudio,
+                                   bool takeIsPlaced)
+{
+    aligner.stopThread (10000);
+    alignAttempts = 0;
+    alignFailed.store (false);
+    alignReady.store (false);
 
     {
         const SpinLock::ScopedLockType lock (sharedLock);
@@ -1068,6 +1398,9 @@ void TransferSession::install (TransferTake::Ptr newTake,
             edits.touched.clear();
         }
 
+        placement.store (newTake != nullptr ? newTake->startInSong : 0);
+        placed.store (takeIsPlaced);
+
         edits.version = ++editCounter;
         ++revision;
     }
@@ -1079,24 +1412,37 @@ void TransferSession::install (TransferTake::Ptr newTake,
     }
 
     analysisProgress.store (0.0f);
-
-    if (newTake != nullptr)
-    {
-        analysing.store (true);
-        startThread (Priority::low);
-    }
-
-    sendChangeMessage();
 }
-
 void TransferSession::run()
 {
     // Declared first so it runs last, after the result has been published.
     const ScopeGuard finished { [this]
     {
+        importing.store (false);
         analysing.store (false);
         sendChangeMessage();
     } };
+
+    if (importing.load())
+    {
+        auto imported = loadFile (pendingImport, sampleRate);
+
+        if (threadShouldExit())
+            return;
+
+        if (imported == nullptr)
+        {
+            importError.store (true);
+            return;
+        }
+
+        // Its audio is here; where it belongs on the timeline is not known.
+        publishTake (std::move (imported), nullptr, nullptr, false);
+
+        importing.store (false);
+        analysing.store (true);
+        sendChangeMessage();
+    }
 
     TransferTake::Ptr job;
 
@@ -1159,10 +1505,10 @@ bool TransferSession::getTakeStartInSong (int64& start) const
 {
     const SpinLock::ScopedLockType lock (sharedLock);
 
-    if (take == nullptr)
+    if (take == nullptr || ! placed.load())
         return false;
 
-    start = take->startInSong;
+    start = placement.load();
     return true;
 }
 
@@ -1247,7 +1593,8 @@ void TransferSession::saveState (MemoryBlock& destination)
 
     const auto audio = encodedAudioFor (currentTake);
 
-    out.writeInt64 (currentTake->startInSong);
+    out.writeInt64 (placement.load());
+    out.writeBool (placed.load());
     out.writeDouble (currentTake->sampleRate);
     out.writeInt ((int) currentTake->channels.size());
     out.writeInt64 (currentTake->numSamples);
@@ -1262,17 +1609,24 @@ void TransferSession::restoreState (const void* data, int sizeInBytes)
 
     MemoryInputStream in (data, (size_t) sizeInBytes, false);
 
-    if (in.readInt() != kStateMagic || in.readInt() != kStateVersion)
+    if (in.readInt() != kStateMagic)
+        return;
+
+    const auto version = in.readInt();
+
+    if (version < 1 || version > kStateVersion)
         return;
 
     const auto restoredEdits = pb::EditState::fromString (in.readString().toStdString());
 
     std::shared_ptr<TransferTake> newTake;
     std::shared_ptr<const MemoryBlock> audio;
+    bool takeIsPlaced = true;
 
     if (in.readBool())
     {
         const auto startInSong = in.readInt64();
+        takeIsPlaced = version < 2 || in.readBool();
         const auto rate = in.readDouble();
         const auto channels = in.readInt();
         const auto numSamples = in.readInt64();
@@ -1298,7 +1652,7 @@ void TransferSession::restoreState (const void* data, int sizeInBytes)
         }
     }
 
-    install (std::move (newTake), &restoredEdits, std::move (audio));
+    install (std::move (newTake), &restoredEdits, std::move (audio), takeIsPlaced);
 }
 
 } // namespace onirique

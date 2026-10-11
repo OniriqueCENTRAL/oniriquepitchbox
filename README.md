@@ -108,6 +108,15 @@ fois. Inséré comme effet sur la piste de la voix :
 2. lancer la lecture dans l'hôte sur le passage à corriger ;
 3. arrêter la lecture (ou cliquer **STOP**) : le passage est analysé.
 
+Plus rapide quand on a le fichier sous la main : **glisser le fichier de la
+voix sur la fenêtre du plugin** (WAV, AIFF, FLAC, OGG, MP3). L'audio est lu et
+analysé tout de suite, sans rien jouer. Il reste à lancer la lecture une
+seconde n'importe où sur le clip : le plugin écoute la piste, retrouve ce
+passage dans le fichier et en déduit où le clip est posé sur la timeline. Tant
+que ce n'est pas fait, la piste passe telle quelle. Il faut que la piste joue
+bien ce fichier, d'un seul tenant et sans effet placé avant PitchBox ; sinon
+le plugin le dit et il reste TRANSFER.
+
 Le plugin rejoue ensuite sa propre copie corrigée à la place de la piste chaque
 fois que la tête de lecture traverse ce passage ; en dehors, la piste passe
 telle quelle. Un nouveau transfert remplace le précédent. La prise est

@@ -515,6 +515,80 @@ int main()
     }
 
     {
+        // The file dropped on the window instead. Its audio arrives without
+        // anything being played; where it sits on the timeline is found from a
+        // moment of the track going past, wherever in the clip that moment is,
+        // and at whatever level the track happens to be.
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getChildFile ("pitchbox_test_import.wav");
+        const auto fileGain = 1.0f / 4000.0f;
+
+        {
+            file.deleteFile();
+            std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
+            juce::WavAudioFormat format;
+            auto writer = format.createWriterFor (stream, juce::AudioFormatWriterOptions()
+                                                              .withSampleRate (kSr)
+                                                              .withNumChannels (2)
+                                                              .withBitsPerSample (24));
+
+            juce::AudioBuffer<float> whole (2, (int) n);
+            whole.copyFrom (0, 0, left.data(), (int) n, fileGain);
+            whole.copyFrom (1, 0, right.data(), (int) n, fileGain);
+
+            if (writer != nullptr)
+                writer->writeFromAudioSampleBuffer (whole, 0, (int) n);
+        }
+
+        TransferSession session;
+        session.prepare (kSr, kMaxBlock, 2);
+        session.importFile (file);
+
+        for (int i = 0; i < 600 && (session.isImporting() || session.isAnalysing() || session.getAnalysis() == nullptr); ++i)
+            pump (50);
+
+        const auto imported = session.getAnalysis();
+
+        std::snprintf (d, sizeof d, "%zu notes, placed: %s", imported ? imported->notes.size() : 0,
+                       session.isPlaced() ? "yes" : "not yet");
+        check (imported != nullptr && imported->numSamples == n && ! session.isPlaced(),
+               "a dropped file is read and analysed", d);
+
+        // The clip starts here on the timeline, and playback starts 1.2 s into it.
+        const int64_t clipStart = 777777;
+        const auto playFrom = (int64_t) (1.2 * kSr);
+
+        juce::AudioBuffer<float> buffer (2, kMaxBlock);
+        int index = 0;
+
+        for (auto pos = playFrom; pos < playFrom + (int64_t) (1.5 * kSr) && ! session.isPlaced();)
+        {
+            const auto count = nextBlockSize (index++);
+            juce::AudioBuffer<float> block (buffer.getArrayOfWritePointers(), 2, count);
+
+            block.copyFrom (0, 0, left.data() + pos, count, 0.37f * fileGain);
+            block.copyFrom (1, 0, right.data() + pos, count, 0.37f * fileGain);
+
+            session.process (block, positionAt (clipStart + pos, true));
+            pos += count;
+
+            if (index % 20 == 0)
+                pump (30);
+        }
+
+        for (int i = 0; i < 100 && ! session.isPlaced() && ! session.placingFailed(); ++i)
+            pump (50);
+
+        int64_t found = 0;
+        const auto known = session.getTakeStartInSong (found);
+
+        std::snprintf (d, sizeof d, "found at %lld, clip is at %lld", (long long) found, (long long) clipStart);
+        check (known && found == clipStart, "and lined up with the track by ear", d);
+
+        file.deleteFile();
+    }
+
+    {
         // A loop back to the start must end the take, not splice into it.
         TransferSession session;
         session.prepare (kSr, kMaxBlock, 2);

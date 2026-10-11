@@ -93,6 +93,22 @@ public:
         starts by itself when the host starts playing and ends when it stops. */
     void toggleTransfer();
 
+    /** The other way to give the plugin a take: the file itself, dropped onto
+        the window. Nothing has to be played through for the audio to arrive,
+        only for the plugin to find out where on the timeline the file sits,
+        and for that a second of playback anywhere on the clip is enough: it
+        hears the track going past, finds that stretch in the file, and has
+        its answer. Until then the track is left alone. */
+    void importFile (const File&);
+
+    bool isImporting() const noexcept               { return importing.load(); }
+    bool importFailed() const noexcept              { return importError.load(); }
+
+    /** False for an imported take whose place on the timeline is not known
+        yet; failed when what is playing could not be found in the file. */
+    bool isPlaced() const noexcept                  { return placed.load(); }
+    bool placingFailed() const noexcept             { return alignFailed.load(); }
+
     State getState() const noexcept                 { return state.load(); }
     double getRecordedSeconds() const noexcept;
 
@@ -149,7 +165,18 @@ private:
     /** Replaces the take and starts analysing the new one. */
     void install (TransferTake::Ptr newTake,
                   const pb::EditState* replacementEdits,
-                  std::shared_ptr<const MemoryBlock> encodedAudio);
+                  std::shared_ptr<const MemoryBlock> encodedAudio,
+                  bool takeIsPlaced = true);
+
+    /** The part of that which does not touch the analysis thread, so the
+        thread itself can use it once it has read a file in. */
+    void publishTake (TransferTake::Ptr newTake,
+                      const pb::EditState* replacementEdits,
+                      std::shared_ptr<const MemoryBlock> encodedAudio,
+                      bool takeIsPlaced);
+
+    void collectForAlignment (const AudioBuffer<float>&, int64 songTime) noexcept;
+    void alignToTrack();
 
     std::shared_ptr<const MemoryBlock> encodedAudioFor (const TransferTake::Ptr&);
 
@@ -172,6 +199,37 @@ private:
 
     std::atomic<bool>  auditionOn { false };
     std::atomic<int>   positionSlips { 0 }, worstPositionSlip { 0 };
+
+    // Where the take sits on the timeline. Kept apart from the take itself,
+    // which is never modified: an imported one is placed after the fact.
+    std::atomic<int64> placement { 0 };
+    std::atomic<bool>  placed { true };
+
+    std::atomic<bool>  importing { false }, importError { false };
+    File pendingImport;
+
+    // Lining an imported file up with the track. The audio thread fills
+    // alignBuffer with what is going past and raises alignReady; the aligner
+    // has it until it lowers the flag again.
+    struct Aligner final : Thread
+    {
+        explicit Aligner (TransferSession& s) : Thread ("PitchBox alignment"), session (s) {}
+        void run() override { session.alignToTrack(); }
+        TransferSession& session;
+    };
+
+    Aligner aligner { *this };
+    std::vector<float> alignBuffer;
+    std::atomic<bool>  alignReady { false }, alignFailed { false };
+    std::atomic<int64> alignSongTime { 0 };
+    int alignAttempts = 0;
+    std::vector<float> alignTakeDecimated;
+    TransferTake::Ptr alignTakeFor;
+
+    // Audio thread's side of it.
+    const TransferTake* alignCollectingFor = nullptr;
+    int   alignFill = 0;
+    int64 alignExpected = 0, alignStart = 0;
 
     // Where the held note is, and the clips made for it so far. Clips are
     // kept until the next note is held, so that the last reference to one is

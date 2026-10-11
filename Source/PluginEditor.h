@@ -12,6 +12,7 @@ namespace onirique
 
 class PitchBoxEditor final : public AudioProcessorEditor,
                              public AudioProcessorEditorARAExtension,
+                             public FileDragAndDropTarget,
                              private AnalysisQueue::Listener,
                              private ChangeListener,
                              private Timer
@@ -21,7 +22,15 @@ public:
     ~PitchBoxEditor() override;
 
     void paint (Graphics&) override;
+    void paintOverChildren (Graphics&) override;
     void resized() override;
+
+    // Dropping the vocal's file on the window brings it in, in a host that
+    // cannot hand it over itself.
+    bool isInterestedInFileDrag (const StringArray& files) override;
+    void fileDragEnter (const StringArray&, int, int) override;
+    void fileDragExit (const StringArray&) override;
+    void filesDropped (const StringArray& files, int, int) override;
 
 private:
     void analysisFinished (PitchBoxAudioSource*) override;
@@ -76,6 +85,7 @@ private:
     TextButton transferButton { "TRANSFER" };
 
     bool transferMode = false;
+    bool fileHovering = false;
     pb::Analysis::Ptr shownAnalysis;
     String gridStatus;
     float gridProgress = 0.0f;

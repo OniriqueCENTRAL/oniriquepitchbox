@@ -15,6 +15,20 @@ namespace
         return laf;
     }
 
+    /** The first of the dropped files that is audio we can read, if any. */
+    File droppedAudioFile (const StringArray& files)
+    {
+        for (const auto& path : files)
+        {
+            const File file (path);
+
+            if (file.hasFileExtension ("wav;aif;aiff;flac;ogg;mp3;wma;m4a"))
+                return file;
+        }
+
+        return {};
+    }
+
     constexpr int kHeaderHeight = 68;
     constexpr int kTitleLeft = 72;
 
@@ -575,6 +589,13 @@ void PitchBoxEditor::updateTransferStatus()
         return;
     }
 
+    if (session.isImporting())
+    {
+        const String text ("IMPORTING");
+        showStatus (text, text, 0.0f);
+        return;
+    }
+
     if (session.isAnalysing())
     {
         const auto p = session.getAnalysisProgress();
@@ -597,6 +618,17 @@ void PitchBoxEditor::updateTransferStatus()
             return;
         }
 
+        // A dropped file is all here, but where it sits on the timeline is
+        // only known once the track has been heard going past.
+        if (! session.isPlaced())
+        {
+            showStatus (session.placingFailed()
+                            ? "This file does not match what the track plays. Use TRANSFER instead."
+                            : "Play the vocal for a second so the file can be lined up with the track.",
+                        {}, 1.0f);
+            return;
+        }
+
         auto text = String (analysis->notes.size()) + String (CharPointer_UTF8 (" notes  \xc2\xb7  key "))
                         + String (analysis->key.scale.describe());
 
@@ -608,7 +640,8 @@ void PitchBoxEditor::updateTransferStatus()
         return;
     }
 
-    const String text ("Click TRANSFER, then play the passage in the host.");
+    const String text (session.importFailed() ? "That file could not be read. Drop a WAV, AIFF, FLAC, OGG or MP3."
+                                              : "Drop the vocal's file here, or click TRANSFER and play the passage.");
     showStatus (text, text, 0.0f);
 }
 
@@ -903,6 +936,50 @@ void PitchBoxEditor::paint (Graphics& g)
     g.setColour (line);
     g.drawVerticalLine (side.getRight(), (float) side.getY(), (float) side.getBottom());
 }
+void PitchBoxEditor::paintOverChildren (Graphics& g)
+{
+    if (! fileHovering)
+        return;
+
+    const auto area = getLocalBounds().withTrimmedTop (kHeaderHeight).toFloat().reduced (10.0f);
+
+    g.setColour (night.withAlpha (0.78f));
+    g.fillRoundedRectangle (area, 14.0f);
+    g.setColour (emberLit);
+    g.drawRoundedRectangle (area, 14.0f, 2.0f);
+
+    g.setColour (Colours::white);
+    g.setFont (capsFont (18.0f));
+    g.drawText ("DROP TO IMPORT THE VOCAL", area, Justification::centred, false);
+}
+
+bool PitchBoxEditor::isInterestedInFileDrag (const StringArray& files)
+{
+    // Only where the plugin holds the take itself. Under ARA the host does.
+    return transferMode && droppedAudioFile (files) != File();
+}
+
+void PitchBoxEditor::fileDragEnter (const StringArray&, int, int)
+{
+    fileHovering = true;
+    repaint();
+}
+
+void PitchBoxEditor::fileDragExit (const StringArray&)
+{
+    fileHovering = false;
+    repaint();
+}
+
+void PitchBoxEditor::filesDropped (const StringArray& files, int, int)
+{
+    fileHovering = false;
+    repaint();
+
+    if (const auto file = droppedAudioFile (files); file != File())
+        processor.getTransfer().importFile (file);
+}
+
 void PitchBoxEditor::resized()
 {
     auto bounds = getLocalBounds();
