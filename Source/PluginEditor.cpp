@@ -1265,7 +1265,9 @@ void PitchBoxEditor::paintHeader (Graphics& g, Rectangle<int> header)
 
     g.setColour (Colour (0xffe9c9cc));
     g.setFont (monoFont (11.0f));
-    g.drawText (status, header.withTrimmedRight (transferMode ? 300 : 170).withTrimmedLeft (titleRight() + 56 + 240),
+    // The status ends before the buttons on the right, the licence badge among them.
+    const int badgeRoom = licenseOverlay != nullptr ? licenseOverlay->pillWidth() + 8 : 0;
+    g.drawText (status, header.withTrimmedRight ((transferMode ? 300 : 170) + badgeRoom).withTrimmedLeft (titleRight() + 56 + 240),
                 Justification::centredRight, true);
 
     // The foot of the header: a faint rule, and a streak of light that runs
@@ -1360,9 +1362,6 @@ void PitchBoxEditor::filesDropped (const StringArray& files, int, int)
 
 void PitchBoxEditor::resized()
 {
-    if (licenseOverlay != nullptr)
-        licenseOverlay->fit (getLocalBounds(), 1.0f, { getWidth() - 262, 75, 248, 26 });
-
     auto bounds = getLocalBounds();
     auto header = bounds.removeFromTop (kHeaderHeight);
 
@@ -1375,7 +1374,15 @@ void PitchBoxEditor::resized()
     right.removeFromRight (8);
 
     if (transferMode)
+    {
         transferButton.setBounds (right.removeFromRight (122));
+        right.removeFromRight (8);
+    }
+
+    // The licence badge is one of the header's buttons, next to the others on the right: the same height, the
+    // same capsule. Its room follows its wording, and the header is laid out again when the licence changes.
+    if (licenseOverlay != nullptr)
+        licenseOverlay->fit (getLocalBounds(), 1.0f, right.removeFromRight (licenseOverlay->pillWidth()), Justification::centredRight);
 
     auto history = row.withTrimmedLeft (titleRight() + 56).withWidth (234);
 
