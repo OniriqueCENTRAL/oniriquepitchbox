@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "ui/OniriqueWindowSize.h"
 
 #include <BinaryData.h>
 
@@ -354,7 +355,9 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     // real ceiling: a host that stretches the editor across a wide screen must
     // not be stopped short and left with a bare band beside it.
     setResizeLimits (900, 500, 8000, 4000);
-    setSize (1200, 770);
+    // taille d'ouverture : la règle commune des plugins ONIRIQUE (ui/OniriqueWindowSize.h)
+    const auto opening = onirique::window::openingSize ({}, "ONIRIQUE PITCHBOX", { 1200, 770 }, { 900, 500 }, { 8000, 4000 });
+    setSize (opening.x, opening.y);
 
     refreshTarget();
     // The licence pill and the activation page, over everything else.
@@ -367,6 +370,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
 
 PitchBoxEditor::~PitchBoxEditor()
 {
+    onirique::window::rememberOnThisComputer ("ONIRIQUE PITCHBOX", getWidth(), getHeight());
     analysisQueue->removeListener (this);
     processor.getTransfer().removeChangeListener (this);
     processor.getTransfer().stopAudition();
