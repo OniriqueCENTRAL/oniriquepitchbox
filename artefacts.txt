@@ -1,0 +1,2 @@
+PitchBox-macOS-AU.zip
+PitchBox-macOS-VST3.zip
