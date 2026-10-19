@@ -99,7 +99,11 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     logo = makeLogo();
 
     addAndMakeVisible (grid);
-    grid.onEdit = [this] { pushEdits(); };
+    grid.onEdit = [this]
+    {
+        pushEdits();
+        takeCentsBases();
+    };
 
     rootBox.addSectionHeading ("KEY");
 
@@ -304,6 +308,62 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     volumeValue.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (volumeValue);
 
+    // The fine pitch of the selected notes, in cents around their semitone.
+    centsSlider.setSliderStyle (Slider::LinearHorizontal);
+    centsSlider.setTextBoxStyle (Slider::NoTextBox, false, 0, 0);
+    centsSlider.setRange (-50.0, 50.0, 1.0);
+    centsSlider.setValue (0.0, dontSendNotification);
+    centsSlider.setDoubleClickReturnValue (true, 0.0);
+    centsSlider.onDragStart = [this] { beginEdit(); };
+    centsSlider.onValueChange = [this]
+    {
+        const auto selection = grid.getSelection();
+
+        if (selection.empty())
+            return;
+
+        if (! centsSlider.isMouseButtonDown())
+            beginEdit();
+
+        if (centsBases.size() != edits.notes.size())
+            takeCentsBases();
+
+        edits.touched.resize (edits.notes.size(), false);
+
+        for (const auto index : selection)
+        {
+            const auto i = (size_t) index;
+
+            if (i >= edits.notes.size())
+                continue;
+
+            auto& n = edits.notes[i];
+            n.targetCents = centsBases[i] + (float) centsSlider.getValue();
+
+            // As with a drag: a note tuned by hand is a note the user wants
+            // moved, so it gets full correction unless it was dialled back.
+            if (! edits.touched[i])
+                n.correctAmount = 1.0f;
+
+            edits.touched[i] = true;
+        }
+
+        edits.bump();
+        pushEdits();
+        updateInspector();
+        grid.repaint();
+    };
+    addAndMakeVisible (centsSlider);
+
+    centsLabel.setText ("CENTS", dontSendNotification);
+    centsLabel.setJustificationType (Justification::centredRight);
+    centsLabel.setColour (Label::textColourId, mist);
+    addAndMakeVisible (centsLabel);
+
+    centsValue.getProperties().set ("pill", true);
+    centsValue.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (centsValue);
+
     inspector.setJustificationType (Justification::centredRight);
     inspector.setColour (Label::textColourId, Colour (0xffe9c9cc));
     inspector.setInterceptsMouseClicks (false, false);
@@ -324,6 +384,8 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
               "Modulation : ce qu'on garde du vibrato et des dérives dans les notes sélectionnées. À 0, elles sont aplaties.");
     describe ({ &volumeSlider, &volumeLabel, &volumeValue },
               "Volume des notes sélectionnées, en dB. Double-clic pour remettre à zéro.");
+    describe ({ &centsSlider, &centsLabel, &centsValue },
+              "Cents : accorde finement les notes sélectionnées, de -50 à +50 cents autour de leur demi-ton. Double-clic pour les remettre juste.");
     describe ({ &undoButton }, "Annuler la dernière modification.");
     describe ({ &redoButton }, "Rétablir la modification annulée.");
     describe ({ &resetButton },
@@ -583,7 +645,8 @@ void PitchBoxEditor::selectionChanged()
     const auto usable = ! selection.empty();
 
     for (auto* c : std::initializer_list<Component*> { &modulationSlider, &modulationLabel, &modulationValue,
-                                                       &volumeSlider, &volumeLabel, &volumeValue })
+                                                       &volumeSlider, &volumeLabel, &volumeValue,
+                                                       &centsSlider, &centsLabel, &centsValue })
     {
         c->setEnabled (usable);
         c->setAlpha (usable ? 1.0f : 0.4f);
@@ -599,7 +662,29 @@ void PitchBoxEditor::selectionChanged()
                                ? edits.notes[(size_t) selection.front()].gainDb
                                : 0.0f,
                            dontSendNotification);
+
+    takeCentsBases();
     updateInspector();
+}
+
+void PitchBoxEditor::takeCentsBases()
+{
+    centsBases.resize (edits.notes.size());
+
+    for (size_t i = 0; i < edits.notes.size(); ++i)
+        centsBases[i] = std::round (edits.notes[i].targetCents / 100.0f) * 100.0f;
+
+    const auto selection = grid.getSelection();
+    auto shown = 0.0f;
+
+    if (! selection.empty() && (size_t) selection.front() < edits.notes.size())
+    {
+        const auto i = (size_t) selection.front();
+        shown = edits.notes[i].targetCents - centsBases[i];
+    }
+
+    centsSlider.setValue (shown, dontSendNotification);
+    updateValueReadouts();
 }
 
 void PitchBoxEditor::describe (std::initializer_list<Component*> components, const char* utf8Text)
@@ -899,6 +984,9 @@ void PitchBoxEditor::updateValueReadouts()
 {
     const auto db = volumeSlider.getValue();
     volumeValue.setText ((db > 0.0 ? "+" : "") + String (db, 1) + " dB", dontSendNotification);
+
+    const auto ct = roundToInt (centsSlider.getValue());
+    centsValue.setText ((ct > 0 ? "+" : "") + String (ct) + " ct", dontSendNotification);
 
     auto percent = [] (double v) { return String (roundToInt (v * 100.0)) + " %"; };
 
@@ -1447,11 +1535,22 @@ void PitchBoxEditor::resized()
     midiButton.setBounds (tools.removeFromLeft (126));
     tools.removeFromLeft (10);
 
+    // Volume and cents share the room left, so both still fit in the
+    // narrowest window; the sliders give way first.
+    const auto sliderWidth = jlimit (60, 120, (tools.getWidth() - (66 + 6 + 8 + 74) - (12 + 54 + 6 + 8 + 66) - 160) / 2);
+
     volumeLabel.setBounds (tools.removeFromLeft (66));
     tools.removeFromLeft (6);
-    volumeSlider.setBounds (tools.removeFromLeft (120));
+    volumeSlider.setBounds (tools.removeFromLeft (sliderWidth));
     tools.removeFromLeft (8);
-    volumeValue.setBounds (tools.removeFromLeft (78).withSizeKeepingCentre (78, 22));
+    volumeValue.setBounds (tools.removeFromLeft (74).withSizeKeepingCentre (74, 22));
+
+    tools.removeFromLeft (12);
+    centsLabel.setBounds (tools.removeFromLeft (54));
+    tools.removeFromLeft (6);
+    centsSlider.setBounds (tools.removeFromLeft (sliderWidth));
+    tools.removeFromLeft (8);
+    centsValue.setBounds (tools.removeFromLeft (66).withSizeKeepingCentre (66, 22));
 
     inspector.setBounds (tools.withTrimmedLeft (10));
 

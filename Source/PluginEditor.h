@@ -103,6 +103,15 @@ private:
     Slider volumeSlider;
     Label volumeLabel, volumeValue, inspector;
 
+    /** Fine tuning of the selected notes: how many cents each sits above or
+        below its semitone. The semitones are taken when the selection or the
+        notes change, not on every step of the slider, so a note pushed to
+        +50 does not flip to the next semitone and run away. */
+    Slider centsSlider;
+    Label centsLabel, centsValue;
+    std::vector<float> centsBases;
+    void takeCentsBases();
+
     //==============================================================================
     /** The description of whatever the pointer is resting on.
 
