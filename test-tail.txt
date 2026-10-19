@@ -1,0 +1,17 @@
+Test project /Users/runner/work/oniriquepitchbox/oniriquepitchbox/build
+    Start 1: yin
+1/6 Test #1: yin ..............................   Passed    0.52 sec
+    Start 2: psola
+2/6 Test #2: psola ............................   Passed    1.25 sec
+    Start 3: notes
+3/6 Test #3: notes ............................   Passed    1.60 sec
+    Start 4: realtime
+4/6 Test #4: realtime .........................   Passed    3.25 sec
+    Start 5: renderer
+5/6 Test #5: renderer .........................   Passed    0.76 sec
+    Start 6: transfer
+6/6 Test #6: transfer .........................   Passed    2.86 sec
+
+100% tests passed out of 6
+
+Total Test time (real) =  10.26 sec
