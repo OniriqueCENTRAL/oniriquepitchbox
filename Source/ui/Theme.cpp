@@ -374,11 +374,12 @@ void OniriqueLookAndFeel::drawLabel (Graphics& g, Label& label)
     g.setColour (Colour (0x33ffd2d6));
     g.drawRoundedRectangle (bounds, radius, 1.0f);
 
-    const auto led = Rectangle<float> (5.0f, 5.0f).withCentre ({ bounds.getX() + radius + 1.0f, bounds.getCentreY() });
+    // The same lit star as an engaged button, a size smaller.
+    const Point<float> led (bounds.getX() + radius + 1.0f, bounds.getCentreY());
     g.setColour (ember.withAlpha (0.35f));
-    g.fillEllipse (led.expanded (2.0f));
-    g.setColour (ember);
-    g.fillEllipse (led);
+    g.fillPath (onirStar (led, 6.0f));
+    g.setColour (emberLit.interpolatedWith (bone, 0.35f));
+    g.fillPath (onirStar (led, 4.0f));
 
     g.setColour (mist);
     g.setFont (getLabelFont (label));
