@@ -29,8 +29,6 @@ NoteGrid::NoteGrid()
     for (auto* bar : { &timeBar, &pitchBar })
     {
         bar->setAutoHide (false);
-        bar->setColour (ScrollBar::thumbColourId, haze.withAlpha (0.55f));
-        bar->setColour (ScrollBar::trackColourId, Colour (0x30000000));
         bar->addListener (this);
         addAndMakeVisible (bar);
     }

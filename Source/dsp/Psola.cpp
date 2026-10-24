@@ -19,20 +19,56 @@ constexpr float kMinFormant = 0.5f;
 constexpr double kApproachCycles = 24.0;
 constexpr float kMaxFormant = 2.0f;
 
-inline float sampleLinear (const float* src, int64_t srcOffset, int64_t srcLength, double absPos) noexcept
+inline float sampleAt (const float* src, int64_t srcOffset, int64_t srcLength, int64_t absPos) noexcept
+{
+    return src[std::clamp<int64_t> (absPos - srcOffset, 0, srcLength - 1)];
+}
+
+/** Between samples, for a grain read faster or slower to move the formants.
+    Four-point cubic rather than a straight line between two: the straight line
+    dulls the top of the voice by a few dB, the cubic keeps it. */
+inline float sampleCubic (const float* src, int64_t srcOffset, int64_t srcLength, double absPos) noexcept
 {
     const double rel = absPos - (double) srcOffset;
+    const auto i = (int64_t) std::floor (rel);
+    const auto t = (float) (rel - (double) i);
 
-    if (rel <= 0.0)
-        return src[0];
+    auto at = [&] (int64_t k) { return src[std::clamp<int64_t> (k, 0, srcLength - 1)]; };
 
-    if (rel >= (double) (srcLength - 1))
-        return src[srcLength - 1];
-
-    const int64_t i = (int64_t) rel;
-    const float frac = (float) (rel - (double) i);
-    return src[i] + frac * (src[i + 1] - src[i]);
+    const float y0 = at (i - 1), y1 = at (i), y2 = at (i + 1), y3 = at (i + 2);
+    const float c1 = 0.5f * (y2 - y0);
+    const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+    const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+    return ((c3 * t + c2) * t + c1) * t + y1;
 }
+
+/** Half a Hann window, 0.5 + 0.5 cos (pi x) for x in [0, 1], read from a table.
+    The output is divided by the sum of the windows laid on each sample, so the
+    shape only has to be smooth, not exact; a cosine per sample of every grain
+    was most of the cost of a render. */
+struct HannTable
+{
+    static constexpr int kSize = 2048;
+    float v[kSize + 2];
+
+    HannTable() noexcept
+    {
+        for (int i = 0; i <= kSize; ++i)
+            v[i] = (float) (0.5 + 0.5 * std::cos (M_PI * (double) i / (double) kSize));
+
+        v[kSize + 1] = 0.0f;
+    }
+
+    float operator() (double x) const noexcept   // x >= 0; 0 beyond 1
+    {
+        const double p = std::min (x, 1.0) * (double) kSize;
+        const auto i = (int) p;
+        const auto t = (float) (p - (double) i);
+        return v[i] + t * (v[i + 1] - v[i]);
+    }
+};
+
+const HannTable hann;
 
 } // namespace
 
@@ -172,8 +208,7 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
     auto passThrough = [&]
     {
         for (int64_t i = 0; i < outLen; ++i)
-            r.dst[first + i - r.dstOffset] =
-                sampleLinear (r.src, r.srcOffset, r.srcLength, (double) (first + i));
+            r.dst[first + i - r.dstOffset] = sampleAt (r.src, r.srcOffset, r.srcLength, first + i);
     };
 
     const auto& marks = *r.marks;
@@ -339,20 +374,30 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
         const int64_t uLo = std::max<int64_t> (-(int64_t) std::lround (halfL), first - centre);
         const int64_t uHi = std::min<int64_t> ((int64_t) std::lround (halfR), last - centre);
 
-        for (int64_t u = uLo; u < uHi; ++u)
+        const double perL = 1.0 / halfL, perR = 1.0 / halfR;
+        auto* acc = scratch.acc.data() + (centre - first);
+        auto* winSum = scratch.winSum.data() + (centre - first);
+
+        // Formants left alone, the grain reads whole samples and needs no
+        // interpolation at all; that is the usual case.
+        if (formantRatio == 1.0f)
         {
-            const double w = u < 0
-                ? 0.5 - 0.5 * std::cos (M_PI * ((double) u + halfL) / halfL)
-                : 0.5 + 0.5 * std::cos (M_PI * (double) u / halfR);
-
-            if (w <= 0.0)
-                continue;
-
-            const double srcPos = (double) m.position + (double) u * (double) formantRatio;
-            const auto idx = (size_t) (centre + u - first);
-
-            scratch.acc[idx]    += w * (double) sampleLinear (r.src, r.srcOffset, r.srcLength, srcPos);
-            scratch.winSum[idx] += w;
+            for (int64_t u = uLo; u < uHi; ++u)
+            {
+                const double w = hann ((double) (u < 0 ? -u : u) * (u < 0 ? perL : perR));
+                acc[u]    += w * (double) sampleAt (r.src, r.srcOffset, r.srcLength, m.position + u);
+                winSum[u] += w;
+            }
+        }
+        else
+        {
+            for (int64_t u = uLo; u < uHi; ++u)
+            {
+                const double w = hann ((double) (u < 0 ? -u : u) * (u < 0 ? perL : perR));
+                const double srcPos = (double) m.position + (double) u * (double) formantRatio;
+                acc[u]    += w * (double) sampleCubic (r.src, r.srcOffset, r.srcLength, srcPos);
+                winSum[u] += w;
+            }
         }
 
         double next = s + Ts;
@@ -387,7 +432,7 @@ void psolaRender (const PsolaRequest& r, PsolaScratch& scratch)
     for (int64_t i = 0; i < outLen; ++i)
     {
         const auto at = first + i;
-        const auto original = sampleLinear (r.src, r.srcOffset, r.srcLength, (double) at);
+        const auto original = sampleAt (r.src, r.srcOffset, r.srcLength, at);
         const double w = scratch.winSum[(size_t) i];
         const auto rendered = w > 1.0e-6 ? (float) (scratch.acc[(size_t) i] / w) : original;
 

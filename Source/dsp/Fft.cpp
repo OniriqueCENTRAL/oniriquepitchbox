@@ -55,6 +55,11 @@ void Fft::transform (std::vector<std::complex<float>>& data, bool invert) const
             std::swap (data[(size_t) i], data[(size_t) j]);
     }
 
+    // Real arithmetic rather than std::complex's operator*, which outside fast
+    // math checks every product for infinities and runs several times slower.
+    auto* d = reinterpret_cast<float*> (data.data());
+    const auto* tw = reinterpret_cast<const float*> (twiddles.data());
+    const float sign = invert ? -1.0f : 1.0f;
     size_t twBase = 0;
 
     for (int len = 2; len <= n; len <<= 1)
@@ -65,15 +70,18 @@ void Fft::transform (std::vector<std::complex<float>>& data, bool invert) const
         {
             for (int k = 0; k < half; ++k)
             {
-                std::complex<float> w = twiddles[twBase + (size_t) k];
-                if (invert)
-                    w = std::conj (w);
+                const float wr = tw[2 * (twBase + (size_t) k)];
+                const float wi = sign * tw[2 * (twBase + (size_t) k) + 1];
 
-                const auto u = data[(size_t) (start + k)];
-                const auto v = data[(size_t) (start + k + half)] * w;
+                float* a = d + 2 * (start + k);
+                float* b = d + 2 * (start + k + half);
 
-                data[(size_t) (start + k)]        = u + v;
-                data[(size_t) (start + k + half)] = u - v;
+                const float vr = b[0] * wr - b[1] * wi;
+                const float vi = b[0] * wi + b[1] * wr;
+                const float ur = a[0], ui = a[1];
+
+                a[0] = ur + vr;  a[1] = ui + vi;
+                b[0] = ur - vr;  b[1] = ui - vi;
             }
         }
 

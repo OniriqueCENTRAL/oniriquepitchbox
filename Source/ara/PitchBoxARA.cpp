@@ -253,18 +253,23 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
             if (! bufferedReader->read (&sourceWindow, 0, windowLength, windowStart, true, true))
                 success = false;
 
+            // A mono take on a stereo track reads the same samples into both
+            // channels: it is rendered once and that goes to both sides.
+            const auto monoTake = source->getChannelCount() == 1;
+
             for (int c = 0; c < outputChannels; ++c)
             {
-                auto* rendered = regionOutput.getWritePointer (c);
+                auto* rendered = regionOutput.getWritePointer (monoTake ? 0 : c);
 
-                state->renderer.render (sourceWindow.getReadPointer (c),
-                                        windowStart,
-                                        windowLength,
-                                        state->edits,
-                                        takeFirst,
-                                        takeLast,
-                                        rendered,
-                                        takeFirst);
+                if (c == 0 || ! monoTake)
+                    state->renderer.render (sourceWindow.getReadPointer (c),
+                                            windowStart,
+                                            windowLength,
+                                            state->edits,
+                                            takeFirst,
+                                            takeLast,
+                                            rendered,
+                                            takeFirst);
 
                 if (sameRate)
                 {

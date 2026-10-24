@@ -55,23 +55,29 @@ PitchTrack YinPitchTracker::process (const float* x,
                 break;
 
         // --- cross-correlation r(tau) = sum_j x[start+j] * x[start+tau+j], j < W
+        // Both sequences are real, so they go through one transform together:
+        // the frame as the real part, the longer stretch as the imaginary part.
         std::fill (bufA.begin(), bufA.end(), std::complex<float> (0.0f, 0.0f));
-        std::fill (bufB.begin(), bufB.end(), std::complex<float> (0.0f, 0.0f));
-
-        for (int j = 0; j < W; ++j)
-            bufA[(size_t) j] = std::complex<float> (x[start + j], 0.0f);
 
         const int longLen = W + tauMax;
         for (int j = 0; j < longLen; ++j)
-            bufB[(size_t) j] = std::complex<float> (x[start + j], 0.0f);
+            bufA[(size_t) j] = std::complex<float> (j < W ? x[start + j] : 0.0f, x[start + j]);
 
         fft->forward (bufA);
-        fft->forward (bufB);
 
-        for (size_t i = 0; i < bufA.size(); ++i)
-            bufA[i] = std::conj (bufA[i]) * bufB[i];
+        // Untangled, A = (Z[k] + conj Z[N-k]) / 2 and B = (Z[k] - conj Z[N-k]) / 2i,
+        // and what the inverse transform needs is conj (A) * B.
+        for (int k = 0; k < fftSize; ++k)
+        {
+            const auto z  = bufA[(size_t) k];
+            const auto zc = std::conj (bufA[(size_t) ((fftSize - k) & (fftSize - 1))]);
+            const float ar = 0.5f * (z.real() + zc.real()), ai = 0.5f * (z.imag() + zc.imag());
+            const float br = 0.5f * (z.imag() - zc.imag()), bi = -0.5f * (z.real() - zc.real());
+            bufB[(size_t) k] = { ar * br + ai * bi, ar * bi - ai * br };
+        }
 
-        fft->inverse (bufA);
+        fft->inverse (bufB);
+        std::swap (bufA, bufB);
 
         // --- difference function
         const double powFrame = cumPow[(size_t) (start + W)] - cumPow[(size_t) start];

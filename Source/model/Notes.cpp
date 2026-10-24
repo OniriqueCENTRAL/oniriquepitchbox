@@ -272,6 +272,14 @@ namespace
 
 namespace
 {
+    /** Index of the first note starting after `s`, or the count of notes. */
+    inline int firstNoteAfter (const std::vector<Note>& notes, int64_t s) noexcept
+    {
+        return (int) (std::upper_bound (notes.begin(), notes.end(), s,
+                                        [] (int64_t v, const Note& n) { return v < n.startSample; })
+                      - notes.begin());
+    }
+
     /** Notes closer together than this are one phrase: the correction glides
         from one to the next across the gap instead of letting go in between. */
     constexpr double kLegatoGapSeconds = 0.1;
@@ -331,11 +339,7 @@ namespace
         {
             // Between two notes: all there is here is the glide, if they are
             // close enough to have one.
-            int next = 0;
-
-            while (next < count && notes[(size_t) next].startSample <= s)
-                ++next;
-
+            const auto next = firstNoteAfter (notes, s);
             float shift = 0.0f;
 
             if (next <= 0 || next >= count || ! glide (notes[(size_t) next - 1], notes[(size_t) next], shift))
@@ -460,11 +464,7 @@ namespace
         }
 
         // Outside every note: between two of them, or off the end of a phrase.
-        int next = 0;
-
-        while (next < count && notes[(size_t) next].startSample <= s)
-            ++next;
-
+        const auto next = firstNoteAfter (notes, s);
         float db = 0.0f;
 
         if (next > 0 && next < count && glide (notes[(size_t) next - 1], notes[(size_t) next], db))
@@ -512,12 +512,24 @@ void buildGainCurve (const std::vector<Note>& notes,
     const auto ramp = std::max (1.0, 0.012 * sampleRate);
     const auto legatoGap = (int64_t) (kLegatoGapSeconds * sampleRate);
 
+    // The level is flat over most of a note, so the gain is only worked out
+    // again when it moves.
+    float lastDb = 0.0f, lastGain = 1.0f;
+
     for (int64_t i = 0; i < count; ++i)
     {
         const auto db = gainDbAt (notes, ramp, legatoGap, first + i);
 
-        if (std::abs (db) >= 1.0e-4f)
-            gainOut[i] = (float) std::pow (10.0, (double) db / 20.0);
+        if (std::abs (db) < 1.0e-4f)
+            continue;
+
+        if (db != lastDb)
+        {
+            lastDb = db;
+            lastGain = (float) std::pow (10.0, (double) db / 20.0);
+        }
+
+        gainOut[i] = lastGain;
     }
 }
 } // namespace pb

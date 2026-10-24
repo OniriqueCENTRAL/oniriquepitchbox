@@ -92,6 +92,13 @@ public:
                            float minSliderPos, float maxSliderPos, juce::Slider::SliderStyle,
                            juce::Slider&) override;
 
+    /** The scroll bars of the note grid: a thin track with a lit thumb, the
+        same line as the linear sliders. */
+    void drawScrollbar (juce::Graphics&, juce::ScrollBar&, int x, int y, int width, int height,
+                        bool isScrollbarVertical, int thumbStartPosition, int thumbSize,
+                        bool isMouseOver, bool isMouseDown) override;
+    int getMinimumScrollbarThumbSize (juce::ScrollBar&) override { return 28; }
+
     /** A label carrying the "pill" property is drawn as the value readout that
         sits under every knob of the range: a dark capsule with its LED. */
     void drawLabel (juce::Graphics&, juce::Label&) override;

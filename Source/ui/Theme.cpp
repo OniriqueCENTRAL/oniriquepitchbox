@@ -307,6 +307,31 @@ void OniriqueLookAndFeel::drawLinearSlider (Graphics& g, int x, int y, int width
     g.fillEllipse (Rectangle<float> (10.0f, 10.0f).withCentre ({ sliderPos, track.getCentreY() }));
 }
 
+void OniriqueLookAndFeel::drawScrollbar (Graphics& g, ScrollBar&, int x, int y, int width, int height,
+                                         bool vertical, int thumbStart, int thumbSize, bool isMouseOver, bool isMouseDown)
+{
+    const auto area = Rectangle<float> ((float) x, (float) y, (float) width, (float) height);
+    const auto thickness = 4.0f;
+    const auto track = vertical ? area.withSizeKeepingCentre (thickness, area.getHeight() - 4.0f)
+                                : area.withSizeKeepingCentre (area.getWidth() - 4.0f, thickness);
+
+    g.setColour (Colour (0x26ffd2d6));
+    g.fillRoundedRectangle (track, thickness * 0.5f);
+
+    if (thumbSize <= 0)
+        return;
+
+    // Wider and brighter under the pointer, so it reads as something to take hold of.
+    const auto lit = isMouseOver || isMouseDown;
+    const auto thumbThickness = lit ? 6.0f : thickness;
+    const auto thumb = vertical
+        ? Rectangle<float> (area.getCentreX() - thumbThickness * 0.5f, (float) thumbStart + 1.0f, thumbThickness, (float) thumbSize - 2.0f)
+        : Rectangle<float> ((float) thumbStart + 1.0f, area.getCentreY() - thumbThickness * 0.5f, (float) thumbSize - 2.0f, thumbThickness);
+
+    g.setColour (lit ? emberLit : ember.withAlpha (0.85f));
+    g.fillRoundedRectangle (thumb, thumbThickness * 0.5f);
+}
+
 Font OniriqueLookAndFeel::getLabelFont (Label& label)
 {
     return label.getProperties().contains ("pill") ? monoFont (11.0f).boldened() : capsFont (10.0f);
