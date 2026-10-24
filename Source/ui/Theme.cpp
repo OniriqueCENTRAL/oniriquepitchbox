@@ -66,6 +66,23 @@ void OniriqueLookAndFeel::drawRotarySlider (Graphics& g, int x, int y, int width
         write (properties["high"].toString(), endAngle);
     }
 }
+namespace
+{
+    /** The four-pointed star of the licence badge (License/LicenseOverlay.cpp), drawn the same way. */
+    Path onirStar (Point<float> c, float r)
+    {
+        Path p;
+        const auto w = r * 0.24f * 0.35f;
+        p.startNewSubPath (c.x, c.y - r);
+        p.quadraticTo (c.x + w, c.y - w, c.x + r, c.y);
+        p.quadraticTo (c.x + w, c.y + w, c.x, c.y + r);
+        p.quadraticTo (c.x - w, c.y + w, c.x - r, c.y);
+        p.quadraticTo (c.x - w, c.y - w, c.x, c.y - r);
+        p.closeSubPath();
+        return p;
+    }
+}
+
 void OniriqueLookAndFeel::drawButtonBackground (Graphics& g, Button& button, const Colour&,
                                                 bool highlighted, bool down)
 {
@@ -93,18 +110,22 @@ void OniriqueLookAndFeel::drawButtonBackground (Graphics& g, Button& button, con
     g.setColour (on ? emberLit : (highlighted || down ? ember.withAlpha (0.7f) : Colour (0x33ffd2d6)));
     g.drawRoundedRectangle (bounds, radius, on ? 1.6f : 1.0f);
 
-    // The little LED that marks an engaged control on every Onirique plugin.
-    const auto led = Rectangle<float> (7.0f, 7.0f)
-                         .withCentre ({ bounds.getX() + radius * 0.9f, bounds.getCentreY() });
-
-    g.setColour (on ? ember : Colour (0x33ffd2d6));
-    g.fillEllipse (led);
+    // The light that marks an engaged control: the four-pointed ONIRIQUE star
+    // of the « ACTIVÉ » badge, glowing when on and dim when off.
+    const Point<float> led (bounds.getX() + radius * 0.9f, bounds.getCentreY());
 
     if (on)
     {
         g.setColour (ember.withAlpha (0.35f));
-        g.fillEllipse (led.expanded (3.0f));
+        g.fillPath (onirStar (led, 7.5f));
+        g.setColour (emberLit.interpolatedWith (bone, 0.35f));
     }
+    else
+    {
+        g.setColour (Colour (0x40ffd2d6));
+    }
+
+    g.fillPath (onirStar (led, 5.0f));
 }
 
 void OniriqueLookAndFeel::drawButtonText (Graphics& g, TextButton& button, bool, bool)
