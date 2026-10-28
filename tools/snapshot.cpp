@@ -3,10 +3,17 @@
 //
 //   pitchbox_snapshot out.png [width height]
 //   pitchbox_snapshot --menu out.png      the drop-down menu on its own
+//   pitchbox_snapshot --modulation out.png  the modulation tool dragging a note up
 #include "../Source/PluginProcessor.h"
 #include "../Source/dsp/Scale.h"
 #include "../Source/ui/Theme.h"
+#include "../Source/ui/NoteGrid.h"
+#include "../Source/ui/OniriqueBar.h"
 #include "../tests/TestSignal.h"
+
+#if JUCE_MAC
+ #include <CoreFoundation/CoreFoundation.h>
+#endif
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
 
@@ -55,7 +62,8 @@ namespace
 {
 struct Director final : juce::Timer
 {
-    Director (juce::File destination, int width, int height) : file (std::move (destination))
+    Director (juce::File destination, int width, int height, bool modulationDrag = false)
+        : file (std::move (destination)), dragWithModulation (modulationDrag)
     {
         processor.reset (static_cast<onirique::PitchBoxProcessor*> (createPluginFilter()));
         processor->setPlayHead (&head);
@@ -136,15 +144,63 @@ struct Director final : juce::Timer
 
             default:
                 // A few ticks for the editor's own timer to catch up.
-                if (++step > 12)
+                if (++step == 6 && dragWithModulation)
+                    dragNote();
+
+                if (step > 12)
                     finish();
                 break;
         }
     }
 
+    template <typename Type>
+    Type* find (juce::Component& parent, std::function<bool (Type&)> wanted = {})
+    {
+        for (auto* child : parent.getChildren())
+        {
+            if (auto* c = dynamic_cast<Type*> (child); c != nullptr && (! wanted || wanted (*c)))
+                return c;
+
+            if (auto* deeper = find<Type> (*child, wanted))
+                return deeper;
+        }
+
+        return nullptr;
+    }
+
+    /** Picks the modulation tool as a click would, and drags the fourth note up. */
+    void dragNote()
+    {
+        auto* button = find<onirique::nuit::Segment> (*editor, [] (onirique::nuit::Segment& b) { return b.getButtonText() == "MODULATION"; });
+        auto* grid = find<onirique::NoteGrid> (*editor);
+
+        if (button == nullptr || grid == nullptr || button->onClick == nullptr)
+            return;
+
+        button->onClick();
+
+        const auto start = grid->getNoteBounds (3).getCentre();
+        const auto source = juce::Desktop::getInstance().getMainMouseSource();
+        const auto now = juce::Time::getCurrentTime();
+
+        auto event = [&] (juce::Point<float> at, bool dragged)
+        {
+            return juce::MouseEvent (source, at, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                     grid, grid, now, start, now, 1, dragged);
+        };
+
+        grid->mouseDown (event (start, false));
+
+        for (int dy = 4; dy <= 80; dy += 4)
+            grid->mouseDrag (event (start.translated (0.0f, (float) -dy), true));
+
+        // Held there, so the readout over the note is in the picture.
+    }
+
     void finish()
     {
         stopTimer();
+        done = true;
 
         const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
 
@@ -162,7 +218,22 @@ struct Director final : juce::Timer
     std::unique_ptr<juce::AudioProcessorEditor> editor;
     std::vector<float> take;
     int step = 0, waited = 0;
+    bool dragWithModulation = false;
+    bool done = false;
 };
+}
+
+/** The dispatch loop of a plain command-line program on macOS returns at
+    once, with no application around it: the messages are pumped by hand. */
+void runUntilDone (Director& director)
+{
+   #if JUCE_MAC
+    while (! director.done)
+        CFRunLoopRunInMode (kCFRunLoopDefaultMode, 0.02, true);
+   #else
+    juce::ignoreUnused (director);
+    juce::MessageManager::getInstance()->runDispatchLoop();
+   #endif
 }
 
 /** Lays a menu out the way JUCE would and draws it with the plugin's look, a
@@ -267,13 +338,25 @@ int main (int argc, char** argv)
     if (juce::String (argv[1]) == "--menu")
         return argc > 2 && writeMenu (juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[2]))) ? 0 : 1;
 
+    if (juce::String (argv[1]) == "--modulation" && argc > 2)
+    {
+        const auto out = juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[2]));
+
+        {
+            Director director (out, 1160, 760, true);
+            runUntilDone (director);
+        }
+
+        return out.existsAsFile() ? 0 : 1;
+    }
+
     const auto file = juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[1]));
     const auto width = argc > 3 ? juce::String (argv[2]).getIntValue() : 1160;
     const auto height = argc > 3 ? juce::String (argv[3]).getIntValue() : 760;
 
     {
         Director director (file, width, height);
-        juce::MessageManager::getInstance()->runDispatchLoop();
+        runUntilDone (director);
     }
 
     return file.existsAsFile() ? 0 : 1;

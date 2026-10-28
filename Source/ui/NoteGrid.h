@@ -25,6 +25,29 @@ class NoteGrid final : public Component,
 public:
     NoteGrid();
 
+    /** What a press on a note does. The selection works the same with every
+        tool: a click on empty grid, or a box drawn over it, picks the notes.
+
+        - select:     moves the note up and down (onto the scale; Alt is free).
+        - modulation: drag up or down to keep more or less of the movement
+                      sung inside the note (vibrato, scoops, drift), 0 to 200 %.
+        - correction: drag to set how far the note is pulled onto its target.
+        - volume:     drag to turn the note up or down, in dB.
+        - bypass:     a click takes the note out of the correction, or back in.
+
+        A drag on a selected note changes every selected note by the same
+        amount; Shift makes it finer; a double click puts the value back. */
+    enum class Tool { select, modulation, correction, volume, bypass };
+
+    void setTool (Tool);
+    Tool getTool() const noexcept { return tool; }
+
+    /** Where the note is drawn, in this component; for tests and tools. */
+    Rectangle<float> getNoteBounds (int index) const
+    {
+        return edits != nullptr && index >= 0 && (size_t) index < edits->notes.size() ? blobFor ((size_t) index) : Rectangle<float>();
+    }
+
     /** Callback fired whenever the user changes something. The editor pushes
         the change into the ARA audio modification, which notifies the host,
         which is what makes the edit audible on the next buffer. */
@@ -89,6 +112,14 @@ private:
     void drawGrid (Graphics&);
     void drawPitchCurve (Graphics&);
     void drawNotes (Graphics&);
+    void drawToolReadout (Graphics&);
+
+    /** The value a value tool sets on a note, and its range. */
+    bool isValueTool() const noexcept;
+    float valueOf (const pb::Note&) const noexcept;
+    void setValueOf (pb::Note&, float) const noexcept;
+    String valueText (float) const;
+    void toggleBypass (int index);
 
     pb::Analysis::Ptr analysis;
     pb::EditState* edits = nullptr;
@@ -102,6 +133,9 @@ private:
     float dragStartCents = 0.0f;
     bool  dragChanged = false;
     std::vector<float> dragStartTargets;
+    std::vector<float> dragStartValues;
+    float dragStartY = 0.0f;
+    Tool tool = Tool::select;
     std::vector<bool>  dragWasTouched;
 
     std::vector<char> selected, lassoBase;

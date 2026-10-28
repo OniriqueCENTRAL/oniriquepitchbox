@@ -30,79 +30,34 @@ namespace
         return {};
     }
 
-    constexpr int kHeaderHeight = 68;
+    constexpr int kBarUnits = 1200;   // the width the bar is drawn for at 100 %
+    constexpr int kToolsHeight = 40;
     constexpr int kToolbarHeight = 40;
-    constexpr int kTitleLeft = 72;
 
-    Font titleFont (bool heavy)
+    int barHeight() { return nuit::Bar::heightFor (kBarUnits); }
+
+    Image sigilImage()
     {
-        return displayFont (23.0f, heavy).withExtraKerningFactor (0.09f);
-    }
-
-    /** A four-pointed star, as on the Onirique sigil. */
-    Path star (Point<float> centre, float radius)
-    {
-        Path p;
-        const auto waist = radius * 0.16f;
-
-        p.startNewSubPath (centre.x, centre.y - radius);
-        p.lineTo (centre.x + waist, centre.y - waist);
-        p.lineTo (centre.x + radius, centre.y);
-        p.lineTo (centre.x + waist, centre.y + waist);
-        p.lineTo (centre.x, centre.y + radius);
-        p.lineTo (centre.x - waist, centre.y + waist);
-        p.lineTo (centre.x - radius, centre.y);
-        p.lineTo (centre.x - waist, centre.y - waist);
-        p.closeSubPath();
-        return p;
-    }
-
-    constexpr int kLogoWidth = 44;
-    constexpr int kLogoMargin = 8;   // room for the glow around it
-
-    Image makeLogo()
-    {
-        const auto sigil = ImageCache::getFromMemory (BinaryData::sigil_png, BinaryData::sigil_pngSize);
-
-        if (! sigil.isValid())
-            return {};
-
-        const auto width = 2 * kLogoWidth;
-        const auto height = width * sigil.getHeight() / sigil.getWidth();
-        const auto margin = 2 * kLogoMargin;
-
-        Image padded (Image::ARGB, width + 2 * margin, height + 2 * margin, true);
-
-        {
-            Graphics g (padded);
-            g.setImageResamplingQuality (Graphics::highResamplingQuality);
-            g.drawImage (sigil, Rectangle<int> (margin, margin, width, height).toFloat());
-        }
-
-        Image result (Image::ARGB, padded.getWidth(), padded.getHeight(), true);
-        Graphics g (result);
-
-        GlowEffect glow;
-        glow.setGlowProperties (7.0f, ember.withAlpha (0.8f));
-        glow.applyEffect (padded, g, 1.0f, 1.0f);
-
-        return result;
+        return ImageCache::getFromMemory (BinaryData::sigil_png, BinaryData::sigil_pngSize);
     }
 }
 
 PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     : AudioProcessorEditor (&p),
       AudioProcessorEditorARAExtension (&p),
-      processor (p)
+      processor (p),
+      bar (p.presets, p.apvts, "PITCHBOX", sigilImage(), kBarUnits, kBarUnits)
 {
     setLookAndFeel (&sharedLookAndFeel());
-    logo = makeLogo();
 
     addAndMakeVisible (grid);
     grid.onEdit = [this]
     {
         pushEdits();
-        takeCentsBases();
+
+        // A tool may have changed what the knob and the sliders show for the
+        // selected notes.
+        selectionChanged();
     };
 
     rootBox.addSectionHeading ("KEY");
@@ -200,6 +155,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
         edits.settings.globalAmount = (float) amountSlider.getValue();
         edits.refreshUntouched();
         pushEdits();
+        mirrorSettings();
     };
 
     transitionSlider.onValueChange = [this]
@@ -207,6 +163,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
         edits.settings.transitionSeconds = transitionSlider.getValue();
         edits.bump();
         pushEdits();
+        mirrorSettings();
     };
 
     formantSlider.onValueChange = [this]
@@ -214,18 +171,25 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
         edits.settings.formantRatio = (float) formantSlider.getValue();
         edits.bump();
         pushEdits();
+        mirrorSettings();
     };
 
-    enabledButton.setClickingTogglesState (true);
-    enabledButton.setToggleState (true, dontSendNotification);
-    enabledButton.onClick = [this]
+    // The tools of the note editor. Each one is a segment of the row over
+    // the grid, its star lit while it is the one in hand.
+    for (const auto& [tool, name] : std::initializer_list<std::pair<NoteGrid::Tool, const char*>> {
+             { NoteGrid::Tool::select, "SELECT" },
+             { NoteGrid::Tool::modulation, "MODULATION" },
+             { NoteGrid::Tool::correction, "CORRECTION" },
+             { NoteGrid::Tool::volume, "VOLUME" },
+             { NoteGrid::Tool::bypass, "BYPASS" } })
     {
-        beginEdit();
-        edits.settings.enabled = enabledButton.getToggleState();
-        edits.bump();
-        pushEdits();
-    };
-    addAndMakeVisible (enabledButton);
+        auto button = std::make_unique<nuit::Segment> (name, true);
+        button->onClick = [this, t = tool] { selectTool (t); };
+        addAndMakeVisible (*button);
+        tools.push_back ({ tool, std::move (button) });
+    }
+
+    selectTool (NoteGrid::Tool::select);
 
     detectKeyButton.onClick = [this]
     {
@@ -392,13 +356,24 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
               "Reset : efface toutes les retouches faites à la main et revient aux notes analysées. La tonalité et les potards sont conservés.");
     describe ({ &transferButton },
               "Transfer : arme l'enregistrement, puis lance la lecture du passage dans le DAW pour le faire entrer dans le plugin.");
-    describe ({ &enabledButton }, "Correction activée ou non. Désactivée, la prise est jouée telle qu'enregistrée.");
     describe ({ &stopButton }, "Stop. Une seconde fois : retour au début.");
     describe ({ &playButton }, "Lire la prise depuis ce point, sans passer par le DAW.");
     describe ({ &loopButton }, "Boucle : tourne sur les notes sélectionnées, ou sur toute la prise.");
     describe ({ &midiButton }, "Export MIDI : enregistre les notes, telles qu'elles sonneront, dans un fichier MIDI.");
     describe ({ &inspector },
               "La note sélectionnée : ce qui a été chanté, son écart en cents, sa destination et sa durée.");
+
+    const char* toolTexts[] = {
+        "Sélection : clic sur une note pour la choisir, cadre sur la grille pour en prendre plusieurs ; glisser une note la monte ou la descend sur la gamme (Alt : librement). Double-clic : la note sort de la correction.",
+        "Modulation : glisser une note vers le haut ou le bas règle ce qu'elle garde de son vibrato, de ses attaques et de ses dérives, de 0 % (un trait droit) à 200 % (exagéré). Le trait se redessine pendant qu'on glisse. Maj : plus fin, double-clic : 100 %.",
+        "Correction : glisser une note règle à quel point elle est tirée vers sa note cible, de 0 % (telle que chantée) à 100 %. Maj : plus fin, double-clic : 100 %.",
+        "Volume : glisser une note la monte ou la baisse, de -24 à +12 dB. Maj : plus fin, double-clic : 0 dB.",
+        "Bypass : un clic sort la note de la correction, un autre l'y remet. Pour un glissé ou une note bleue voulus.",
+    };
+
+    for (size_t i = 0; i < tools.size(); ++i)
+        describe ({ tools[i].button.get() }, toolTexts[i]);
+
     hoverTip.setInterceptsMouseClicks (false, false);
     hoverTip.setAlwaysOnTop (true);
     addChildComponent (hoverTip);
@@ -420,6 +395,11 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     // taille d'ouverture : la règle commune des plugins ONIRIQUE (ui/OniriqueWindowSize.h)
     const auto opening = onirique::window::openingSize ({}, "ONIRIQUE PITCHBOX", { 1200, 770 }, { 900, 500 }, { 8000, 4000 });
     setSize (opening.x, opening.y);
+
+    // The bar goes in last but for the licence: the panels it opens lie over
+    // everything else in the window.
+    addAndMakeVisible (bar);
+    mirrored = parameterValues();
 
     refreshTarget();
     // The licence pill and the activation page, over everything else.
@@ -541,6 +521,9 @@ void PitchBoxEditor::refreshTarget()
     }
 
     grid.setEditState (&edits);
+
+    if (currentModification != nullptr)
+        syncControls();
 }
 
 void PitchBoxEditor::pushEdits()
@@ -841,7 +824,75 @@ void PitchBoxEditor::syncControls()
     amountSlider.setValue (s.globalAmount, dontSendNotification);
     transitionSlider.setValue (s.transitionSeconds, dontSendNotification);
     formantSlider.setValue (s.formantRatio, dontSendNotification);
-    enabledButton.setToggleState (s.enabled, dontSendNotification);
+    updateValueReadouts();
+    mirrorSettings();
+}
+
+std::array<float, 4> PitchBoxEditor::parameterValues() const
+{
+    auto value = [this] (const char* id) { return processor.apvts.getRawParameterValue (id)->load(); };
+    return { value ("amount"), value ("speed"), value ("formant"), value ("bypass") };
+}
+
+void PitchBoxEditor::mirrorSettings()
+{
+    const auto& s = edits.settings;
+    const std::array<std::pair<const char*, float>, 4> wanted { { { "amount", s.globalAmount },
+                                                                  { "speed", (float) s.transitionSeconds },
+                                                                  { "formant", s.formantRatio },
+                                                                  { "bypass", s.enabled ? 0.0f : 1.0f } } };
+
+    for (const auto& [id, value] : wanted)
+    {
+        auto* parameter = processor.apvts.getParameter (id);
+        const auto normalised = parameter->convertTo0to1 (value);
+
+        if (std::abs (parameter->getValue() - normalised) > 1.0e-5f)
+            parameter->setValueNotifyingHost (normalised);
+    }
+
+    mirrored = parameterValues();
+}
+
+void PitchBoxEditor::followParameters()
+{
+    const auto now = parameterValues();
+
+    if (now == mirrored)
+        return;
+
+    mirrored = now;
+
+    auto& s = edits.settings;
+    const auto enabled = now[3] < 0.5f;
+
+    if (approximatelyEqual (s.globalAmount, now[0]) && approximatelyEqual ((float) s.transitionSeconds, now[1])
+        && approximatelyEqual (s.formantRatio, now[2]) && s.enabled == enabled)
+        return;
+
+    // A preset, the other side of the A/B, IN, or the host: the take follows,
+    // and the change can be undone like any other.
+    beginEdit();
+    s.globalAmount = now[0];
+    s.transitionSeconds = now[1];
+    s.formantRatio = now[2];
+    s.enabled = enabled;
+    edits.refreshUntouched();
+    pushEdits();
+
+    amountSlider.setValue (s.globalAmount, dontSendNotification);
+    transitionSlider.setValue (s.transitionSeconds, dontSendNotification);
+    formantSlider.setValue (s.formantRatio, dontSendNotification);
+    updateValueReadouts();
+    grid.repaint();
+}
+
+void PitchBoxEditor::selectTool (NoteGrid::Tool tool)
+{
+    grid.setTool (tool);
+
+    for (auto& choice : tools)
+        choice.button->setToggleState (choice.tool == tool, dontSendNotification);
 }
 
 void PitchBoxEditor::showStatus (const String& headerText, const String& gridText, float newGridProgress)
@@ -849,7 +900,7 @@ void PitchBoxEditor::showStatus (const String& headerText, const String& gridTex
     if (headerText != status)
     {
         status = headerText;
-        repaint (getLocalBounds().removeFromTop (kHeaderHeight));
+        repaint (statusArea);
     }
 
     if (gridText != gridStatus || ! approximatelyEqual (newGridProgress, gridProgress))
@@ -1249,9 +1300,7 @@ void PitchBoxEditor::timerCallback()
     updateInspector();
     updateHoverTip();
 
-    // Only what moves in the header: the light along its foot, and the stars.
-    repaint (0, kHeaderHeight - 8, getWidth(), 9);
-    repaint (titleRight(), 0, 56, kHeaderHeight - 8);
+    followParameters();
 
     if (transferMode && getARAEditorView() == nullptr)
     {
@@ -1289,131 +1338,43 @@ void PitchBoxEditor::timerCallback()
     {
         edits = currentModification->getEdits();
         grid.setEditState (&edits);
+        syncControls();
     }
 }
 
 //==============================================================================
-int PitchBoxEditor::titleRight() const
-{
-    return kTitleLeft
-           + roundToInt (GlyphArrangement::getStringWidth (titleFont (true), "ONIRIQUE")
-                         + GlyphArrangement::getStringWidth (titleFont (false), "PITCHBOX"))
-           + 12;
-}
-
-void PitchBoxEditor::paintHeader (Graphics& g, Rectangle<int> header)
-{
-    const auto area = header.toFloat();
-    const auto seconds = (Time::getMillisecondCounterHiRes() - openedAt) * 0.001;
-
-    // The crimson of the range: darkest at the sigil, brightest behind the
-    // name, and falling away again to the right and towards the foot.
-    ColourGradient ground (Colour (0xff2c060b), 0.0f, 0.0f, Colour (0xff3b080e), area.getRight(), 0.0f, false);
-    ground.addColour (0.32, Colour (0xff7a0e1c));
-    ground.addColour (0.7, Colour (0xff5a0a14));
-    g.setGradientFill (ground);
-    g.fillRect (area);
-
-    g.setGradientFill (ColourGradient (Colours::transparentBlack, 0.0f, area.getY(),
-                                       Colour (0x73000000), 0.0f, area.getBottom(), false));
-    g.fillRect (area);
-
-    if (logo.isValid())
-    {
-        const auto width = (float) logo.getWidth() * 0.5f;
-        const auto height = (float) logo.getHeight() * 0.5f;
-
-        g.drawImage (logo, { 16.0f - (float) kLogoMargin, area.getCentreY() - height * 0.5f, width, height });
-    }
-
-    // The name: the house in white, the product in a paler weight beside it.
-    const auto nameWidth = GlyphArrangement::getStringWidth (titleFont (true), "ONIRIQUE");
-
-    g.setColour (Colours::white);
-    g.setFont (titleFont (true));
-    g.drawText ("ONIRIQUE", area.withTrimmedLeft ((float) kTitleLeft).withWidth (nameWidth + 4.0f),
-                Justification::centredLeft, false);
-
-    g.setColour (Colour (0xffe3b5ba));
-    g.setFont (titleFont (false));
-    g.drawText ("PITCHBOX", area.withTrimmedLeft ((float) kTitleLeft + nameWidth + 10.0f).withWidth (260.0f),
-                Justification::centredLeft, false);
-
-    // Stars beside it, each breathing at its own pace.
-    struct Spark { float x, y, radius, rate, offset; };
-    static const Spark sparks[] = { { 10.0f, 17.0f, 5.5f, 0.9f, 0.0f },  { 27.0f, 11.0f, 3.0f, 1.3f, 1.7f },
-                                    { 38.0f, 24.0f, 4.0f, 0.7f, 3.1f },  { 18.0f, 42.0f, 4.5f, 1.1f, 4.4f },
-                                    { 34.0f, 48.0f, 2.5f, 1.6f, 2.3f },  { 46.0f, 38.0f, 2.0f, 1.0f, 5.2f } };
-
-    const auto sparkLeft = (float) titleRight();
-
-    for (const auto& s : sparks)
-    {
-        const auto glow = 0.5f + 0.5f * (float) std::sin (seconds * s.rate * 2.0 + s.offset);
-
-        g.setColour (Colours::white.withAlpha (0.25f + 0.65f * glow));
-        g.fillPath (star ({ sparkLeft + s.x, area.getY() + s.y }, s.radius * (0.8f + 0.2f * glow)));
-    }
-
-    g.setColour (Colour (0xffe9c9cc));
-    g.setFont (monoFont (11.0f));
-    // The status ends before the buttons on the right, the licence badge among them.
-    const int badgeRoom = licenseOverlay != nullptr ? licenseOverlay->pillWidth() + 8 : 0;
-    g.drawText (status, header.withTrimmedRight ((transferMode ? 300 : 170) + badgeRoom).withTrimmedLeft (titleRight() + 56 + 240),
-                Justification::centredRight, true);
-
-    // The foot of the header: a faint rule, and a streak of light that runs
-    // along it from left to right and comes round again.
-    const auto footY = area.getBottom() - 2.0f;
-
-    g.setColour (Colour (0x30ffd2d6));
-    g.fillRect (0.0f, footY, area.getWidth(), 1.0f);
-
-    const auto length = jmax (160.0f, area.getWidth() * 0.22f);
-    const auto cycle = 3.6;
-    const auto travelled = (float) (std::fmod (seconds, cycle) / cycle);
-    const auto head = -40.0f + travelled * (area.getWidth() + length + 80.0f);
-    const auto tail = head - length;
-
-    // Bright at the head, trailing off behind it, with a halo around the lot.
-    ColourGradient halo (Colours::transparentBlack, tail, 0.0f, Colours::transparentBlack, head + 14.0f, 0.0f, false);
-    halo.addColour (0.82, ember.withAlpha (0.55f));
-    g.setGradientFill (halo);
-    g.fillRect (tail, footY - 3.0f, length + 14.0f, 7.0f);
-
-    ColourGradient streak (Colours::transparentWhite, tail, 0.0f, Colours::transparentWhite, head + 6.0f, 0.0f, false);
-    streak.addColour (0.55, emberLit.withAlpha (0.9f));
-    streak.addColour (0.93, Colours::white);
-    g.setGradientFill (streak);
-    g.fillRoundedRectangle (tail, footY - 0.5f, length + 6.0f, 2.0f, 1.0f);
-}
-
 void PitchBoxEditor::paint (Graphics& g)
 {
     g.fillAll (night);
 
-    paintHeader (g, getLocalBounds().removeFromTop (kHeaderHeight));
-
     // Side panel ground.
-    auto side = getLocalBounds().withTop (kHeaderHeight).removeFromLeft (178);
+    auto side = getLocalBounds().withTop (barHeight()).removeFromLeft (178);
     g.setColour (deep);
     g.fillRect (side);
     g.setColour (line);
     g.drawVerticalLine (side.getRight(), (float) side.getY(), (float) side.getBottom());
 
-    // The strip of tools above the grid.
-    const auto tools = getLocalBounds().withTop (kHeaderHeight).withTrimmedLeft (179).removeFromTop (kToolbarHeight);
+    // The two strips above the grid: the tools, then what the selected notes are set to.
+    const auto strips = getLocalBounds().withTop (barHeight()).withTrimmedLeft (179).removeFromTop (kToolsHeight + kToolbarHeight);
     g.setColour (deep.withAlpha (0.7f));
-    g.fillRect (tools);
+    g.fillRect (strips);
     g.setColour (line);
-    g.drawHorizontalLine (tools.getBottom() - 1, (float) tools.getX(), (float) tools.getRight());
+    g.drawHorizontalLine (strips.getY() + kToolsHeight - 1, (float) strips.getX(), (float) strips.getRight());
+    g.drawHorizontalLine (strips.getBottom() - 1, (float) strips.getX(), (float) strips.getRight());
+
+    nuit::drawWell (g, toolWell.toFloat());
+
+    // What the take is and what playback is doing, at the end of the tools.
+    g.setColour (Colour (0xffe9c9cc));
+    g.setFont (monoFont (11.0f));
+    g.drawText (status, statusArea, Justification::centredRight, true);
 }
 void PitchBoxEditor::paintOverChildren (Graphics& g)
 {
     if (! fileHovering)
         return;
 
-    const auto area = getLocalBounds().withTrimmedTop (kHeaderHeight).toFloat().reduced (10.0f);
+    const auto area = getLocalBounds().withTrimmedTop (barHeight()).toFloat().reduced (10.0f);
 
     g.setColour (night.withAlpha (0.78f));
     g.fillRoundedRectangle (area, 14.0f);
@@ -1455,37 +1416,29 @@ void PitchBoxEditor::filesDropped (const StringArray& files, int, int)
 void PitchBoxEditor::resized()
 {
     auto bounds = getLocalBounds();
-    auto header = bounds.removeFromTop (kHeaderHeight);
 
-    // Controls sit in the upper part of the header, clear of the light that
-    // runs along its foot.
-    const auto row = header.withTrimmedBottom (6).withSizeKeepingCentre (header.getWidth(), 30);
-    auto right = row;
+    // The bar keeps its height and takes the whole width; the licence badge
+    // has its place in it, beside the menu.
+    bar.setUnitsWidth (getWidth());
+    bar.setPillWidth (licenseOverlay != nullptr ? licenseOverlay->pillWidth() : 0);
+    bar.place (1.0f, getLocalBounds());
 
-    enabledButton.setBounds (right.removeFromRight (150).withTrimmedRight (14).withTrimmedLeft (0));
-    right.removeFromRight (8);
-
-    if (transferMode)
-    {
-        transferButton.setBounds (right.removeFromRight (122));
-        right.removeFromRight (8);
-    }
-
-    // The licence badge is one of the header's buttons, next to the others on the right: the same height, the
-    // same capsule. Its room follows its wording, and the header is laid out again when the licence changes.
     if (licenseOverlay != nullptr)
-        licenseOverlay->fit (getLocalBounds(), 1.0f, right.removeFromRight (licenseOverlay->pillWidth()), Justification::centredRight);
+        licenseOverlay->fit (getLocalBounds(), 1.0f, bar.getPillArea(), Justification::centredRight);
 
-    auto history = row.withTrimmedLeft (titleRight() + 56).withWidth (234);
+    bounds.removeFromTop (barHeight());
 
-    for (auto* b : { &undoButton, &redoButton, &resetButton })
-    {
-        b->setBounds (history.removeFromLeft (72));
-        history.removeFromLeft (6);
-    }
     auto side = bounds.removeFromLeft (178).reduced (14, 16);
 
     side.removeFromTop (4);
+
+    // Without ARA the take comes in first: TRANSFER heads the panel.
+    if (transferMode)
+    {
+        transferButton.setBounds (side.removeFromTop (30));
+        side.removeFromTop (14);
+    }
+
     rootBox.setBounds (side.removeFromTop (30));
     side.removeFromTop (8);
     scaleBox.setBounds (side.removeFromTop (30));
@@ -1519,40 +1472,69 @@ void PitchBoxEditor::resized()
     knob (transitionSlider, transitionLabel, transitionValue);
     knob (formantSlider, formantLabel, formantValue);
     knob (modulationSlider, modulationLabel, modulationValue);
-    auto tools = bounds.removeFromTop (kToolbarHeight).reduced (10, 5);
+
+    // The tools, then undo, redo and reset, then the status.
+    auto toolRow = bounds.removeFromTop (kToolsHeight).reduced (10, 5);
+    {
+        int total = 4 + 2 * ((int) tools.size() - 1);
+
+        for (const auto& choice : tools)
+            total += choice.button->preferredWidth();
+
+        toolWell = toolRow.removeFromLeft (total);
+        auto inner = toolWell.reduced (2);
+
+        for (auto& choice : tools)
+        {
+            choice.button->setBounds (inner.removeFromLeft (choice.button->preferredWidth()));
+            inner.removeFromLeft (2);
+        }
+    }
+
+    toolRow.removeFromLeft (12);
+
+    for (auto* b : { &undoButton, &redoButton, &resetButton })
+    {
+        b->setBounds (toolRow.removeFromLeft (74));
+        toolRow.removeFromLeft (6);
+    }
+
+    statusArea = toolRow.withTrimmedLeft (8);
+
+    auto strip = bounds.removeFromTop (kToolbarHeight).reduced (10, 5);
 
     if (transferMode)
     {
         for (auto* b : std::initializer_list<Component*> { &stopButton, &playButton, &loopButton })
         {
-            b->setBounds (tools.removeFromLeft (tools.getHeight()));
-            tools.removeFromLeft (6);
+            b->setBounds (strip.removeFromLeft (strip.getHeight()));
+            strip.removeFromLeft (6);
         }
 
-        tools.removeFromLeft (8);
+        strip.removeFromLeft (8);
     }
 
-    midiButton.setBounds (tools.removeFromLeft (126));
-    tools.removeFromLeft (10);
+    midiButton.setBounds (strip.removeFromLeft (126));
+    strip.removeFromLeft (10);
 
     // Volume and cents share the room left, so both still fit in the
     // narrowest window; the sliders give way first.
-    const auto sliderWidth = jlimit (60, 120, (tools.getWidth() - (66 + 6 + 8 + 74) - (12 + 54 + 6 + 8 + 66) - 160) / 2);
+    const auto sliderWidth = jlimit (60, 120, (strip.getWidth() - (66 + 6 + 8 + 74) - (12 + 54 + 6 + 8 + 66) - 160) / 2);
 
-    volumeLabel.setBounds (tools.removeFromLeft (66));
-    tools.removeFromLeft (6);
-    volumeSlider.setBounds (tools.removeFromLeft (sliderWidth));
-    tools.removeFromLeft (8);
-    volumeValue.setBounds (tools.removeFromLeft (74).withSizeKeepingCentre (74, 22));
+    volumeLabel.setBounds (strip.removeFromLeft (66));
+    strip.removeFromLeft (6);
+    volumeSlider.setBounds (strip.removeFromLeft (sliderWidth));
+    strip.removeFromLeft (8);
+    volumeValue.setBounds (strip.removeFromLeft (74).withSizeKeepingCentre (74, 22));
 
-    tools.removeFromLeft (12);
-    centsLabel.setBounds (tools.removeFromLeft (54));
-    tools.removeFromLeft (6);
-    centsSlider.setBounds (tools.removeFromLeft (sliderWidth));
-    tools.removeFromLeft (8);
-    centsValue.setBounds (tools.removeFromLeft (66).withSizeKeepingCentre (66, 22));
+    strip.removeFromLeft (12);
+    centsLabel.setBounds (strip.removeFromLeft (54));
+    strip.removeFromLeft (6);
+    centsSlider.setBounds (strip.removeFromLeft (sliderWidth));
+    strip.removeFromLeft (8);
+    centsValue.setBounds (strip.removeFromLeft (66).withSizeKeepingCentre (66, 22));
 
-    inspector.setBounds (tools.withTrimmedLeft (10));
+    inspector.setBounds (strip.withTrimmedLeft (10));
 
     grid.setBounds (bounds);
 }

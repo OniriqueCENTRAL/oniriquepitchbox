@@ -6,6 +6,7 @@
 #include "License/LicenseOverlay.h"
 #include "PluginProcessor.h"
 #include "ui/NoteGrid.h"
+#include "ui/OniriqueBar.h"
 #include "ui/Theme.h"
 
 namespace onirique
@@ -68,19 +69,42 @@ private:
     void applyLoop();
     void exportMidi();
     void updateInspector();
-    void paintHeader (Graphics&, Rectangle<int> header);
-    int titleRight() const;
     void updateValueReadouts();
     void selectionChanged();
     void auditionNote (int index, int64_t position);
 
     void syncControls();
+
+    /** The presets and the A/B of the bar hold the correction settings as the
+        processor's parameters; the take holds them in its edit state. A change
+        on either side is carried to the other: a knob or a new take writes the
+        parameters, a preset, the A/B or IN write the take. */
+    void mirrorSettings();
+    void followParameters();
+    std::array<float, 4> parameterValues() const;
+    std::array<float, 4> mirrored {};
+
+    void selectTool (NoteGrid::Tool);
     void showStatus (const String& headerText, const String& gridText, float gridProgress);
     pb::Analysis::Ptr currentAnalysis() const;
 
     PitchBoxProcessor& processor;
 
+    /** The bar of the range over everything: the brand, presets, IN, A/B,
+        copy and paste, the licence badge and the menu. */
+    nuit::Bar bar;
+
     NoteGrid grid;
+
+    /** The tools of the note editor, in a row over it. */
+    struct ToolChoice
+    {
+        NoteGrid::Tool tool;
+        std::unique_ptr<nuit::Segment> button;
+    };
+
+    std::vector<ToolChoice> tools;
+    Rectangle<int> toolWell, statusArea;
 
     ComboBox rootBox, scaleBox;
     Slider amountSlider, transitionSlider, formantSlider, modulationSlider;
@@ -89,7 +113,6 @@ private:
     TextButton undoButton { "UNDO" }, redoButton { "REDO" }, resetButton { "RESET" };
     std::vector<pb::EditState> undoStack, redoStack;
     TextButton detectKeyButton { "DETECT KEY" };
-    TextButton enabledButton { "CORRECTION" };
     TextButton transferButton { "TRANSFER" };
 
     theme::TransportButton stopButton { theme::TransportButton::Kind::stop },
@@ -158,14 +181,6 @@ private:
     PitchBoxAudioSource* currentSource = nullptr;
     PitchBoxAudioModification* currentModification = nullptr;
     pb::EditState edits;
-
-    /** The sigil with its ember glow already baked in, at twice the size it is
-        drawn so it stays sharp on a scaled display. */
-    Image logo;
-
-    /** When the editor opened: the light that runs along the foot of the
-        header, and the stars beside the name, keep time from here. */
-    double openedAt = Time::getMillisecondCounterHiRes();
 
     String status { "Waiting for an ARA host" };
 

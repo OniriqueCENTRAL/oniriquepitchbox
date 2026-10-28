@@ -19,6 +19,24 @@ namespace
     constexpr float kScrollPerNotch = 0.35f;
 
     constexpr int kScrollBarSize = 12;
+
+    /** What a value tool works on: its range, where a double click puts it
+        back, and how much one point of drag moves it. */
+    struct Span { float low, high, standard, perPoint; };
+
+    Span spanOf (NoteGrid::Tool tool) noexcept
+    {
+        switch (tool)
+        {
+            case NoteGrid::Tool::modulation: return { 0.0f, 2.0f, 1.0f, 0.01f };      // 1 % a point
+            case NoteGrid::Tool::correction: return { 0.0f, 1.0f, 1.0f, 0.005f };
+            case NoteGrid::Tool::volume:     return { -24.0f, 12.0f, 0.0f, 0.1f };    // dB
+            case NoteGrid::Tool::select:
+            case NoteGrid::Tool::bypass:     break;
+        }
+
+        return { 0.0f, 1.0f, 0.0f, 0.0f };
+    }
 }
 
 NoteGrid::NoteGrid()
@@ -207,6 +225,7 @@ void NoteGrid::paint (Graphics& g)
 
         drawPitchCurve (g);
         drawNotes (g);
+        drawToolReadout (g);
     }
 
     if (playheadVisible && playhead >= viewStart && playhead <= viewStart + viewLength)
@@ -538,8 +557,9 @@ void NoteGrid::mouseMove (const MouseEvent& e)
 
     if (was != hoveredNote)
     {
-        setMouseCursor (hoveredNote >= 0 ? MouseCursor::UpDownResizeCursor
-                                         : MouseCursor::NormalCursor);
+        setMouseCursor (hoveredNote < 0           ? MouseCursor::NormalCursor
+                        : tool == Tool::bypass   ? MouseCursor::PointingHandCursor
+                                                 : MouseCursor::UpDownResizeCursor);
         repaint();
     }
 }
@@ -599,9 +619,21 @@ void NoteGrid::mouseDown (const MouseEvent& e)
         selectionChanged();
     }
 
+    if (tool == Tool::bypass)
+    {
+        toggleBypass (hit);
+        return;
+    }
+
     draggingNote = hit;
     dragChanged = false;
     dragStartCents = yToCents (e.position.y);
+    dragStartY = e.position.y;
+
+    dragStartValues.resize (edits->notes.size());
+
+    for (size_t i = 0; i < edits->notes.size(); ++i)
+        dragStartValues[i] = valueOf (edits->notes[i]);
 
     dragStartTargets.resize (edits->notes.size());
     dragWasTouched.resize (edits->notes.size());
@@ -666,6 +698,48 @@ void NoteGrid::mouseDrag (const MouseEvent& e)
         return;
 
     const auto grabbed = (size_t) draggingNote;
+
+    if (isValueTool())
+    {
+        if (dragStartValues.size() != edits->notes.size())
+            return;
+
+        // Up is more. Every note the drag moves gets the same change, so
+        // notes set apart keep their difference.
+        const auto span = spanOf (tool);
+        const auto change = (dragStartY - e.position.y) * span.perPoint * (e.mods.isShiftDown() ? 0.2f : 1.0f);
+
+        if (! dragChanged)
+        {
+            if (std::abs (dragStartY - e.position.y) < 2.0f)
+                return;
+
+            dragChanged = true;
+
+            if (onBeginEdit)
+                onBeginEdit();
+        }
+
+        edits->touched.resize (edits->notes.size(), false);
+
+        for (size_t i = 0; i < edits->notes.size(); ++i)
+        {
+            if (i != grabbed && ! isSelected (i))
+                continue;
+
+            setValueOf (edits->notes[i], jlimit (span.low, span.high, dragStartValues[i] + change));
+            edits->touched[i] = true;
+        }
+
+        edits->bump();
+
+        if (onEdit)
+            onEdit();
+
+        repaint();
+        return;
+    }
+
     const auto delta = yToCents (e.position.y) - dragStartCents;
     auto target = dragStartTargets[grabbed] + delta;
 
@@ -740,12 +814,50 @@ void NoteGrid::mouseDoubleClick (const MouseEvent& e)
     if (index < 0 || edits == nullptr)
         return;
 
+    // Double click takes a note out of the correction entirely: the usual
+    // reason a corrector sounds wrong is one deliberate bend it should not
+    // have touched. The bypass tool does it on a single click already.
+    if (tool == Tool::select)
+    {
+        toggleBypass (index);
+        return;
+    }
+
+    if (! isValueTool())
+        return;
+
+    // With a value tool it puts the value back where it started.
     if (onBeginEdit)
         onBeginEdit();
 
-    // Double click takes a note out of the correction entirely: the usual
-    // reason a corrector sounds wrong is one deliberate bend it should not
-    // have touched. With several selected, they all follow the one clicked.
+    edits->touched.resize (edits->notes.size(), false);
+
+    for (size_t i = 0; i < edits->notes.size(); ++i)
+    {
+        if ((int) i != index && ! (isSelected ((size_t) index) && isSelected (i)))
+            continue;
+
+        setValueOf (edits->notes[i], spanOf (tool).standard);
+        edits->touched[i] = true;
+    }
+
+    edits->bump();
+
+    if (onEdit)
+        onEdit();
+
+    repaint();
+}
+
+void NoteGrid::toggleBypass (int index)
+{
+    if (index < 0 || edits == nullptr || (size_t) index >= edits->notes.size())
+        return;
+
+    if (onBeginEdit)
+        onBeginEdit();
+
+    // With several selected, they all follow the one clicked.
     const auto bypass = ! edits->notes[(size_t) index].bypassed;
 
     edits->touched.resize (edits->notes.size(), false);
@@ -765,6 +877,100 @@ void NoteGrid::mouseDoubleClick (const MouseEvent& e)
         onEdit();
 
     repaint();
+}
+
+//==============================================================================
+void NoteGrid::setTool (Tool newTool)
+{
+    if (tool == newTool)
+        return;
+
+    tool = newTool;
+    draggingNote = -1;
+    setMouseCursor (MouseCursor::NormalCursor);
+    hoveredNote = -1;
+    repaint();
+}
+
+bool NoteGrid::isValueTool() const noexcept
+{
+    return tool == Tool::modulation || tool == Tool::correction || tool == Tool::volume;
+}
+
+float NoteGrid::valueOf (const pb::Note& n) const noexcept
+{
+    switch (tool)
+    {
+        case Tool::modulation: return n.vibratoScale;
+        case Tool::correction: return n.correctAmount;
+        case Tool::volume:     return n.gainDb;
+        case Tool::select:
+        case Tool::bypass:     break;
+    }
+
+    return 0.0f;
+}
+
+void NoteGrid::setValueOf (pb::Note& n, float value) const noexcept
+{
+    switch (tool)
+    {
+        case Tool::modulation: n.vibratoScale = value; break;
+        case Tool::correction: n.correctAmount = value; break;
+        case Tool::volume:     n.gainDb = value; break;
+        case Tool::select:
+        case Tool::bypass:     break;
+    }
+}
+
+String NoteGrid::valueText (float value) const
+{
+    switch (tool)
+    {
+        case Tool::modulation: return "MODULATION  " + String (roundToInt (value * 100.0f)) + " %";
+        case Tool::correction: return "CORRECTION  " + String (roundToInt (value * 100.0f)) + " %";
+        case Tool::volume:     return "VOLUME  " + String (value > 0.05f ? "+" : "") + String (value, 1) + " dB";
+        case Tool::select:
+        case Tool::bypass:     break;
+    }
+
+    return {};
+}
+
+void NoteGrid::drawToolReadout (Graphics& g)
+{
+    // A value tool says what it is setting on the note in hand, or the one
+    // under the pointer, right over it.
+    if (edits == nullptr || ! isValueTool())
+        return;
+
+    const auto index = draggingNote >= 0 ? draggingNote : hoveredNote;
+
+    if (index < 0 || (size_t) index >= edits->notes.size())
+        return;
+
+    const auto text = valueText (valueOf (edits->notes[(size_t) index]));
+    const auto font = monoFont (11.0f);
+    const auto blob = blobFor ((size_t) index);
+    const auto width = GlyphArrangement::getStringWidth (font, text) + 22.0f;
+
+    auto pill = Rectangle<float> (width, 22.0f).withCentre ({ jmax (blob.getX() + width * 0.5f, blob.getCentreX()), blob.getY() - 16.0f });
+
+    if (pill.getY() < 4.0f)
+        pill.setY (blob.getBottom() + 5.0f);
+
+    pill = pill.constrainedWithin (getLocalBounds().toFloat().withTrimmedLeft (kRulerWidth + 2.0f).reduced (4.0f));
+
+    g.setColour (Colours::black.withAlpha (0.4f));
+    g.fillRoundedRectangle (pill.translated (0.0f, 2.0f), pill.getHeight() * 0.5f);
+    g.setColour (night.withAlpha (0.94f));
+    g.fillRoundedRectangle (pill, pill.getHeight() * 0.5f);
+    g.setColour (emberLit.withAlpha (0.8f));
+    g.drawRoundedRectangle (pill.reduced (0.5f), pill.getHeight() * 0.5f, 1.0f);
+
+    g.setColour (mist);
+    g.setFont (font);
+    g.drawText (text, pill, Justification::centred, false);
 }
 
 void NoteGrid::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& wheel)

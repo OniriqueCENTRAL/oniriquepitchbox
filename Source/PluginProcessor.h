@@ -6,6 +6,7 @@
 #include "License/LicenseGuard.h"
 #include "ara/PitchBoxARA.h"
 #include "transfer/TransferSession.h"
+#include "ui/OniriquePresets.h"
 
 namespace onirique
 {
@@ -72,6 +73,13 @@ public:
 
     /** Where the take lives in a host without ARA. */
     TransferSession& getTransfer() noexcept { return transfer; }
+
+    /** How the take is corrected — amount, speed, formant — and whether it is
+        at all (bypass), as parameters: what the presets and the A/B comparison
+        of the bar over the editor hold. The take keeps its own copy in its edit
+        state, which is what is heard; the editor carries one to the other. */
+    AudioProcessorValueTreeState apvts;
+    PresetBank presets;
 
 private:
     TransferSession transfer;
