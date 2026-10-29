@@ -121,34 +121,7 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
     setUpKnob (amountSlider, amountLabel, amountValue, "AMOUNT", 0.0, 1.0, 0.0, "0", "100");
     setUpKnob (transitionSlider, transitionLabel, transitionValue, "SPEED", 0.0, 0.25, 0.035, "0", "250");
     setUpKnob (formantSlider, formantLabel, formantValue, "FORMANT", 0.7, 1.4, 1.0, "0.7", "1.4");
-    setUpKnob (modulationSlider, modulationLabel, modulationValue, "MODULATION", 0.0, 2.0, 1.0, "0", "200");
     updateValueReadouts();
-    // How much of the sung movement inside a note is kept: vibrato, scoops and
-    // drift alike. At 0 the pitch line of the selected notes is drawn flat,
-    // at 1 it is as sung, and above that it is exaggerated.
-
-    modulationSlider.onValueChange = [this]
-    {
-        const auto selection = grid.getSelection();
-
-        if (selection.empty())
-            return;
-
-        if (! modulationSlider.isMouseButtonDown())
-            beginEdit();
-
-        edits.touched.resize (edits.notes.size(), false);
-
-        for (const auto index : selection)
-        {
-            edits.notes[(size_t) index].vibratoScale = (float) modulationSlider.getValue();
-            edits.touched[(size_t) index] = true;
-        }
-
-        edits.bump();
-        pushEdits();
-        grid.repaint();
-    };
 
     amountSlider.onValueChange = [this]
     {
@@ -344,8 +317,6 @@ PitchBoxEditor::PitchBoxEditor (PitchBoxProcessor& p)
               "Speed : le temps que met la hauteur à glisser d'une note à la suivante. À 0, le saut est franc.");
     describe ({ &formantSlider, &formantLabel, &formantValue },
               "Formant : change la couleur de la voix sans toucher à sa hauteur.");
-    describe ({ &modulationSlider, &modulationLabel, &modulationValue },
-              "Modulation : ce qu'on garde du vibrato et des dérives dans les notes sélectionnées. À 0, elles sont aplaties.");
     describe ({ &volumeSlider, &volumeLabel, &volumeValue },
               "Volume des notes sélectionnées, en dB. Double-clic pour remettre à zéro.");
     describe ({ &centsSlider, &centsLabel, &centsValue },
@@ -627,19 +598,12 @@ void PitchBoxEditor::selectionChanged()
     const auto selection = grid.getSelection();
     const auto usable = ! selection.empty();
 
-    for (auto* c : std::initializer_list<Component*> { &modulationSlider, &modulationLabel, &modulationValue,
-                                                       &volumeSlider, &volumeLabel, &volumeValue,
+    for (auto* c : std::initializer_list<Component*> { &volumeSlider, &volumeLabel, &volumeValue,
                                                        &centsSlider, &centsLabel, &centsValue })
     {
         c->setEnabled (usable);
         c->setAlpha (usable ? 1.0f : 0.4f);
     }
-
-    const auto shown = usable && (size_t) selection.front() < edits.notes.size()
-                           ? edits.notes[(size_t) selection.front()].vibratoScale
-                           : 1.0f;
-
-    modulationSlider.setValue (shown, dontSendNotification);
 
     volumeSlider.setValue (usable && (size_t) selection.front() < edits.notes.size()
                                ? edits.notes[(size_t) selection.front()].gainDb
@@ -1044,7 +1008,6 @@ void PitchBoxEditor::updateValueReadouts()
     amountValue.setText (percent (amountSlider.getValue()), dontSendNotification);
     transitionValue.setText (String (roundToInt (transitionSlider.getValue() * 1000.0)) + " ms", dontSendNotification);
     formantValue.setText (String (formantSlider.getValue(), 2), dontSendNotification);
-    modulationValue.setText (percent (modulationSlider.getValue()), dontSendNotification);
 }
 
 void PitchBoxEditor::playLocally()
@@ -1446,9 +1409,9 @@ void PitchBoxEditor::resized()
     detectKeyButton.setBounds (side.removeFromTop (30));
     side.removeFromTop (14);
 
-    // Four knobs share whatever height is left, so the panel still fits at the
+    // Three knobs share whatever height is left, so the panel still fits at the
     // smallest window size. Each is a name, the dial, and its readout.
-    const auto knobHeight = jlimit (62, 132, side.getHeight() / 4 - 6);
+    const auto knobHeight = jlimit (62, 132, side.getHeight() / 3 - 6);
 
     // In a low window there is no room for the readouts under the dials; the
     // dials stay, and the value is still there in the description.
@@ -1471,7 +1434,6 @@ void PitchBoxEditor::resized()
     knob (amountSlider, amountLabel, amountValue);
     knob (transitionSlider, transitionLabel, transitionValue);
     knob (formantSlider, formantLabel, formantValue);
-    knob (modulationSlider, modulationLabel, modulationValue);
 
     // The tools, then undo, redo and reset, then the status.
     auto toolRow = bounds.removeFromTop (kToolsHeight).reduced (10, 5);

@@ -107,9 +107,9 @@ private:
     Rectangle<int> toolWell, statusArea;
 
     ComboBox rootBox, scaleBox;
-    Slider amountSlider, transitionSlider, formantSlider, modulationSlider;
-    Label amountLabel, transitionLabel, formantLabel, modulationLabel;
-    Label amountValue, transitionValue, formantValue, modulationValue;
+    Slider amountSlider, transitionSlider, formantSlider;
+    Label amountLabel, transitionLabel, formantLabel;
+    Label amountValue, transitionValue, formantValue;
     TextButton undoButton { "UNDO" }, redoButton { "REDO" }, resetButton { "RESET" };
     std::vector<pb::EditState> undoStack, redoStack;
     TextButton detectKeyButton { "DETECT KEY" };
