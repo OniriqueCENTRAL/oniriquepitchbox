@@ -129,8 +129,17 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
         return true;
     }
 
-    if (! positionInfo.getIsPlaying() || numSamples <= 0)
+    if (numSamples <= 0)
         return true;
+
+    if (! positionInfo.getIsPlaying())
+    {
+        playAudition (buffer);
+        return true;
+    }
+
+    // Once the transport runs, the take is already sounding where it belongs.
+    auditionPlayer.silence();
 
     Report::playingBlocks.fetch_add (1);
     Report::regions.store ((int) getPlaybackRegions().size());
@@ -303,6 +312,24 @@ bool PitchBoxPlaybackRenderer::processBlock (AudioBuffer<float>& buffer,
     Report::problem.store (problem);
     return success;
 }
+void PitchBoxPlaybackRenderer::playAudition (AudioBuffer<float>& buffer) noexcept
+{
+    audition.read (heard);
+
+    // Only the renderer that plays the held take: any other instance of the
+    // plugin, on another track, stays quiet.
+    auto ours = false;
+
+    for (auto* region : getPlaybackRegions())
+        if (region->getAudioModification() == heard.modification)
+            ours = true;
+
+    if (! ours && ! auditionPlayer.isSounding())
+        return;
+
+    auditionPlayer.mix (buffer, heard.clip, ours && audition.isOn(), sampleRate, heard.takeRate / sampleRate);
+}
+
 //==============================================================================
 PitchBoxDocumentController::~PitchBoxDocumentController()
 {
@@ -325,7 +352,7 @@ ARAAudioModification* PitchBoxDocumentController::doCreateAudioModification (
 
 ARAPlaybackRenderer* PitchBoxDocumentController::doCreatePlaybackRenderer() noexcept
 {
-    return new PitchBoxPlaybackRenderer (getDocumentController());
+    return new PitchBoxPlaybackRenderer (getDocumentController(), audition);
 }
 
 void PitchBoxDocumentController::didEnableAudioSourceSamplesAccess (ARAAudioSource* audioSource,

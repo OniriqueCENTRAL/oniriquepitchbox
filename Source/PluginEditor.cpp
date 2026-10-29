@@ -387,6 +387,10 @@ PitchBoxEditor::~PitchBoxEditor()
     analysisQueue->removeListener (this);
     processor.getTransfer().removeChangeListener (this);
     processor.getTransfer().stopAudition();
+
+    if (araController != nullptr)
+        araController->getAudition().release();
+
     setLookAndFeel (nullptr);
 }
 
@@ -438,6 +442,8 @@ void PitchBoxEditor::refreshTarget()
 
     if (specialisation == nullptr)
         return;
+
+    araController = specialisation;
 
     auto* document = specialisation->getDocument();
 
@@ -502,7 +508,12 @@ void PitchBoxEditor::pushEdits()
     if (transferMode)
         processor.getTransfer().setEdits (edits);
     else if (currentModification != nullptr)
+    {
         currentModification->setEdits (edits);
+
+        // A note being held while it is edited has to be heard changing.
+        rebuildAraAudition();
+    }
 }
 
 //==============================================================================
@@ -731,9 +742,11 @@ void PitchBoxEditor::updateInspector()
 
 void PitchBoxEditor::auditionNote (int index, int64_t position)
 {
-    // Only in transfer mode: that is where the plugin holds the audio itself.
     if (! transferMode)
+    {
+        auditionAra (index, position);
         return;
+    }
 
     auto& session = processor.getTransfer();
 
@@ -745,6 +758,76 @@ void PitchBoxEditor::auditionNote (int index, int64_t position)
 
     const auto& n = edits.notes[(size_t) index];
     session.startAudition (n.startSample, n.endSample, position);
+}
+
+void PitchBoxEditor::auditionAra (int index, int64_t position)
+{
+    if (araController == nullptr)
+        return;
+
+    auto& audition = araController->getAudition();
+
+    if (index < 0 || (size_t) index >= edits.notes.size() || currentSource == nullptr || currentModification == nullptr)
+    {
+        araAuditionNote = -1;
+        audition.release();
+        return;
+    }
+
+    const auto analysis = currentSource->getAnalysis();
+    const auto rate = currentSource->getSampleRate();
+    const auto takeLength = (int64) currentSource->getSampleCount();
+    const auto channels = jlimit (1, 2, currentSource->getChannelCount());
+
+    if (analysis == nullptr || rate <= 0.0 || takeLength <= 0)
+        return;
+
+    // The take around the note, with room for the clip and for the renderer's
+    // context, read once now rather than on every step of the drag.
+    const auto& n = edits.notes[(size_t) index];
+    const auto margin = AuditionBuilder::marginSamples (rate) + jmax (analysis->paddingFor (1.0f), analysis->paddingFor (1.4f),
+                                                                      analysis->paddingFor (0.7f));
+    const auto first = n.startSample - margin;
+    const auto length = jmin ((int64) (120.0 * rate), n.endSample - n.startSample + 2 * margin);
+
+    araAuditionWindow.setSize (channels, (int) length, false, false, true);
+    araAuditionWindow.clear();
+
+    ARAAudioSourceReader reader (currentSource);
+
+    if (! reader.isValid())
+        return;
+
+    reader.read (&araAuditionWindow, 0, (int) length, first, true, channels > 1);
+
+    araAuditionWindowStart = first;
+    araAuditionNote = index;
+    araAuditionCentre = position;
+    araAuditionBuilder.startNewNote();
+
+    rebuildAraAudition();
+}
+
+void PitchBoxEditor::rebuildAraAudition()
+{
+    if (araAuditionNote < 0 || (size_t) araAuditionNote >= edits.notes.size()
+        || araController == nullptr || currentSource == nullptr || currentModification == nullptr)
+        return;
+
+    AuditionTake take;
+    take.rate = currentSource->getSampleRate();
+    take.numSamples = (int64) currentSource->getSampleCount();
+    take.firstSample = araAuditionWindowStart;
+    take.length = araAuditionWindow.getNumSamples();
+
+    for (int c = 0; c < araAuditionWindow.getNumChannels(); ++c)
+        take.channels.push_back (araAuditionWindow.getReadPointer (c));
+
+    const auto& n = edits.notes[(size_t) araAuditionNote];
+    auto clip = araAuditionBuilder.build (take, currentSource->getAnalysis(), edits,
+                                          n.startSample, n.endSample, araAuditionCentre);
+
+    araController->getAudition().hold (currentModification, std::move (clip), take.rate);
 }
 
 pb::Analysis::Ptr PitchBoxEditor::currentAnalysis() const

@@ -102,6 +102,7 @@ target_sources(OniriquePitchBox PRIVATE
     Source/PluginEditor.cpp
     Source/ara/PitchBoxARA.cpp
     Source/transfer/TransferSession.cpp
+    Source/transfer/Audition.cpp
     Source/ui/NoteGrid.cpp
     Source/ui/Theme.cpp)
 
@@ -155,7 +156,8 @@ juce_add_console_app(test_transfer PRODUCT_NAME "test_transfer")
 
 target_sources(test_transfer PRIVATE
     tests/test_transfer.cpp
-    Source/transfer/TransferSession.cpp)
+    Source/transfer/TransferSession.cpp
+    Source/transfer/Audition.cpp)
 
 target_include_directories(test_transfer PRIVATE tests)
 

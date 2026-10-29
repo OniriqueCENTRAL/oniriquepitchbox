@@ -7,6 +7,7 @@
 #include "../model/Analysis.h"
 #include "../model/EditState.h"
 #include "../model/RegionRenderer.h"
+#include "Audition.h"
 
 namespace onirique
 {
@@ -33,28 +34,6 @@ struct TransferTake
     std::vector<std::vector<float>> channels;
 };
 
-//==============================================================================
-/** What a held note sounds like: one cycle of the corrected voice, frozen.
-
-    A voiced note is held the way a wavetable holds a tone. One pitch period is
-    lifted out of the corrected audio, resampled into a table, and read round
-    and round at exactly the rate that gives the period back, so the pitch
-    heard is the pitch the note has. Anything longer than one period would be
-    heard for what it is, a loop.
-
-    Built off the audio thread, so that all the audio thread does is read it.
-*/
-struct AuditionClip
-{
-    using Ptr = std::shared_ptr<const AuditionClip>;
-
-    int64 length = 0;
-
-    /** Table samples per output sample. */
-    double increment = 1.0;
-
-    std::vector<std::vector<float>> channels;
-};
 //==============================================================================
 /** What the plugin does in a host that has no ARA.
 
@@ -257,10 +236,8 @@ private:
     // kept until the next note is held, so that the last reference to one is
     // never dropped on the audio thread.
     CriticalSection auditionLock;
-    pb::RegionRenderer auditionRenderer;
-    pb::Analysis::Ptr auditionRendererAnalysis;
+    AuditionBuilder auditionBuilder;
     int64 auditionNoteStart = 0, auditionNoteEnd = 0, auditionCentre = 0;
-    std::vector<AuditionClip::Ptr> auditionClips, olderAuditionClips;
 
     // Capture: the audio thread writes the fifo, the timer empties it.
     AbstractFifo fifo { 1 };
@@ -314,18 +291,9 @@ private:
     int64 fadeSliceStart = 0, fadeSliceLength = 0;
     int fadeRemaining = 0, fadeLength = 1;
 
-    /** One clip being played. Two of them, so that a new clip can fade in
-        while the one it replaces fades out. */
-    struct AuditionVoice
-    {
-        AuditionClip::Ptr clip;
-        double position = 0.0;
-        float gain = 0.0f;
-    };
-
-    void mixAudition (AuditionVoice&, AudioBuffer<float>&, bool wanted) noexcept;
-
-    AuditionVoice heldVoice, fadingVoice;
+    // The audio thread's copy of the clip, and what plays it.
+    AuditionClip::Ptr audioAuditionClip;
+    AuditionPlayer auditionPlayer;
 
     double sampleRate = 0.0;
     int maxBlock = 512;

@@ -72,6 +72,8 @@ private:
     void updateValueReadouts();
     void selectionChanged();
     void auditionNote (int index, int64_t position);
+    void auditionAra (int index, int64_t position);
+    void rebuildAraAudition();
 
     void syncControls();
 
@@ -180,6 +182,15 @@ private:
 
     PitchBoxAudioSource* currentSource = nullptr;
     PitchBoxAudioModification* currentModification = nullptr;
+    PitchBoxDocumentController* araController = nullptr;
+
+    // The note held under ARA: the stretch of the take around it, read once
+    // when it is grabbed, and rebuilt into a clip on every change.
+    AuditionBuilder araAuditionBuilder;
+    AudioBuffer<float> araAuditionWindow;
+    int64 araAuditionWindowStart = 0;
+    int araAuditionNote = -1;
+    int64 araAuditionCentre = 0;
     pb::EditState edits;
 
     String status { "Waiting for an ARA host" };

@@ -8,6 +8,7 @@
 #include "../model/EditState.h"
 #include "../model/RegionRenderer.h"
 #include "../dsp/Resample.h"
+#include "../transfer/Audition.h"
 
 namespace onirique
 {
@@ -358,10 +359,61 @@ private:
     immutable analysis or in the audio modification's edit state, which it
     re-reads whenever the version number has moved.
 */
+/** The note the editor is holding, for the renderers to play while the host
+    is stopped. One per document: the editor writes it, and the renderer whose
+    regions include the held note's modification plays it. */
+class AraAudition
+{
+public:
+    /** Message thread. The clip is in the take's samples, at `takeRate`. */
+    void hold (const ARAAudioModification* modification, AuditionClip::Ptr clip, double takeRate)
+    {
+        const SpinLock::ScopedLockType lock (heldLock);
+        heldModification = modification;
+        heldClip = std::move (clip);
+        heldRate = takeRate;
+        on.store (true);
+    }
+
+    void release() noexcept   { on.store (false); }
+
+    struct Held
+    {
+        const ARAAudioModification* modification = nullptr;
+        AuditionClip::Ptr clip;
+        double takeRate = 48000.0;
+    };
+
+    /** Audio thread: picks up the held note when the lock is free, and keeps
+        what it had otherwise. */
+    void read (Held& into) const noexcept
+    {
+        const SpinLock::ScopedTryLockType lock (heldLock);
+
+        if (lock.isLocked())
+        {
+            into.modification = heldModification;
+            into.clip = heldClip;
+            into.takeRate = heldRate;
+        }
+    }
+
+    bool isOn() const noexcept   { return on.load(); }
+
+private:
+    mutable SpinLock heldLock;
+    const ARAAudioModification* heldModification = nullptr;
+    AuditionClip::Ptr heldClip;
+    double heldRate = 48000.0;
+    std::atomic<bool> on { false };
+};
+
+//==============================================================================
 class PitchBoxPlaybackRenderer final : public ARAPlaybackRenderer
 {
 public:
-    using ARAPlaybackRenderer::ARAPlaybackRenderer;
+    PitchBoxPlaybackRenderer (ARA::PlugIn::DocumentController* documentController, const AraAudition& sharedAudition)
+        : ARAPlaybackRenderer (documentController), audition (sharedAudition) {}
 
     void prepareToPlay (double sampleRateIn,
                         int maximumSamplesPerBlockIn,
@@ -393,6 +445,13 @@ private:
     };
 
     RegionState* stateFor (ARAPlaybackRegion*);
+
+    /** While the host is stopped: the note held in the editor, if it is one of ours. */
+    void playAudition (AudioBuffer<float>&) noexcept;
+
+    const AraAudition& audition;
+    AraAudition::Held heard;
+    AuditionPlayer auditionPlayer;
     std::unique_ptr<RegionState> makeState (ARAPlaybackRegion*);
 
     // A host is free to hand over regions after it has prepared the renderer;
@@ -424,6 +483,9 @@ public:
 
     AnalysisQueue& getAnalysisQueue() noexcept { return *analysisQueue; }
 
+    /** The note held in the editor, heard through the renderers. */
+    AraAudition& getAudition() noexcept { return audition; }
+
 protected:
     ARAAudioSource* doCreateAudioSource (ARADocument*, ARA::ARAAudioSourceHostRef) noexcept override;
 
@@ -442,6 +504,7 @@ protected:
 
 private:
     SharedResourcePointer<AnalysisQueue> analysisQueue;
+    AraAudition audition;
 };
 
 } // namespace onirique
