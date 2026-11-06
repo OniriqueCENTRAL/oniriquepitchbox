@@ -1341,6 +1341,14 @@ void PitchBoxEditor::updatePlayhead()
 
 void PitchBoxEditor::timerCallback()
 {
+    // la couleur de l'interface (menu ⋯, ou changée dans un autre plugin ONIRIQUE) : tout se redessine
+    if (onirique::look::changedSince (themeSeen))
+    {
+        daBackdrop = {};
+        daBackdrop = {};
+        std::function<void (juce::Component&)> all = [&all] (juce::Component& k) { k.repaint(); for (auto* ch : k.getChildren()) all (*ch); };
+        all (*this);
+    }
     updatePlayhead();
     updateValueReadouts();
     updateInspector();
@@ -1391,11 +1399,13 @@ void PitchBoxEditor::timerCallback()
 //==============================================================================
 void PitchBoxEditor::paint (Graphics& g)
 {
-    g.fillAll (night);
+    if (daBackdrop.getWidth() != getWidth() || daBackdrop.getHeight() != getHeight())
+        daBackdrop = onirique::da::backdrop (getWidth(), getHeight(), (float) getWidth() / 1100.0f);
+    g.drawImageAt (daBackdrop, 0, 0);
 
     // Side panel ground.
     auto side = getLocalBounds().withTop (barHeight()).removeFromLeft (178);
-    g.setColour (deep);
+    g.setColour (deep.withAlpha (0.55f));   // verre sombre : le fond de VOCALBOX passe au travers
     g.fillRect (side);
     g.setColour (line);
     g.drawVerticalLine (side.getRight(), (float) side.getY(), (float) side.getBottom());
@@ -1461,6 +1471,8 @@ void PitchBoxEditor::filesDropped (const StringArray& files, int, int)
 
 void PitchBoxEditor::resized()
 {
+    if (themeButton.getParentComponent() == nullptr) addAndMakeVisible (themeButton);
+    themeButton.setBounds (getWidth() - 50, 12, 38, 26);
     auto bounds = getLocalBounds();
 
     // The bar keeps its height and takes the whole width; the licence badge
